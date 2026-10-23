@@ -10,7 +10,7 @@
 
   const DEFAULT_CFG = {
     center: { lat: 24.0245, lng: -104.6700 },   // Plaza de Armas / Catedral, Durango
-    base: null, maxMin: 20, traffic: 1.1, visitMin: 20, dayH: 8, maxPerDay: 0, farFirst: true,
+    base: null, maxMin: 0, traffic: 1.1, visitMin: 20, dayH: 8, maxPerDay: 0, farFirst: true,
     verifs: ['Verificador 1', 'Verificador 2', 'Verificador 3'], gKey: ''
   };
   const APP = window.APP_CONFIG || {};
@@ -38,6 +38,23 @@
     done: load('done', {}),              // visitKey → true
     visits: [], result: null, activeVerif: 0, workbook: null, index: null
   };
+  // Catálogo oficial incluido (zonas fijas). Se usa por defecto y cuando no hay internet de mapas.
+  const BUNDLED = window.CATALOGO_DURANGO || null;
+  function bundledCatalog() {
+    if (!BUNDLED) return null;
+    const c = state.cfg.center;
+    const places = BUNDLED.places.map(p => Object.assign({}, p, {
+      distKm: +C.haversineKm(c, p).toFixed(2), bearing: +C.bearing(c, p).toFixed(1)
+    }));
+    return { places, center: Object.assign({}, BUNDLED.center), radiusKm: 0, source: BUNDLED.source, fetchedAt: Date.parse(BUNDLED.version + 'T12:00:00'),
+      bundled: BUNDLED.version, fixedZones: true, zoneNames: BUNDLED.zoneNames, cuts: BUNDLED.cuts };
+  }
+  if (!state.catalog || (state.catalog.bundled && state.catalog.bundled !== (BUNDLED && BUNDLED.version))) {
+    state.catalog = bundledCatalog();
+    // no se guarda en localStorage: viene incluido en la app
+  }
+  if (state.cfg.maxMin === 20 && !load('cfgMaxMinTouched', false)) state.cfg.maxMin = 0; // antes el límite era 20 min
+  const noLimit = () => !(state.cfg.maxMin > 0);
   const colors = () => ['--v1', '--v2', '--v3'].map(v => getComputedStyle(document.documentElement).getPropertyValue(v).trim());
   const base = () => state.cfg.base || state.cfg.center;
   // Google Routes ya trae tráfico: el factor solo aplica a OSRM / estimados
@@ -68,28 +85,31 @@
     $$('.v-maxmin').forEach(e => { e.textContent = state.cfg.maxMin; });
     const el = $('#catStatus'), cat = state.catalog;
     if (!cat) { el.className = 'status'; el.textContent = 'Aún no se ha generado el catálogo.'; return; }
-    const inR = cat.places.filter(p => eff(p.minutes, p.timeSource) <= state.cfg.maxMin);
+    const inR = cat.places.filter(p => noLimit() || eff(p.minutes, p.timeSource) <= state.cfg.maxMin);
     const byType = {};
     inR.forEach(p => { byType[p.type] = (byType[p.type] || 0) + 1; });
     const moved = C.haversineKm(cat.center, state.cfg.center) > 0.3;
     el.className = 'status ok';
-    el.innerHTML = `<b>${inR.length}</b> asentamientos a ≤ ${state.cfg.maxMin} min (de ${cat.places.length} consultados) · ` +
+    el.innerHTML = (cat.bundled ? `<b>Catálogo oficial incluido</b> (${esc(cat.bundled)}) · zonas fijas: ${cat.zoneNames.map(esc).join(' · ')}<br>` : '') +
+      `<b>${inR.length}</b> asentamientos ${noLimit() ? '(sin límite de minutos)' : 'a ≤ ' + state.cfg.maxMin + ' min'} de ${cat.places.length} · ` +
       Object.entries(byType).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${n} ${esc(t)}`).join(' · ') +
       `<br><small class="muted">Tiempos: ${esc(cat.source)} · factor tráfico ×${state.cfg.traffic} (solo OSRM/estimados) · ${new Date(cat.fetchedAt).toLocaleString('es-MX')}</small>` +
-      (moved ? '<br><b style="color:var(--warn)">El centro cambió: vuelve a generar el catálogo.</b>' : '');
+      (moved && !cat.bundled ? '<br><b style="color:var(--warn)">El centro cambió: vuelve a generar el catálogo.</b>' : '') +
+      (!cat.bundled && BUNDLED ? '<br><button class="btn sm" id="btnBundled" type="button">Volver al catálogo oficial incluido</button>' : '');
+    const bb = $('#btnBundled'); if (bb) bb.onclick = () => { state.catalog = bundledCatalog(); state.index = null; try { localStorage.removeItem(LS + 'catalog'); } catch (e) {} renderCatalogStatus(); compute(); toast('Catálogo oficial restaurado'); };
   }
 
   $('#btnCatalog').addEventListener('click', async () => {
     const btn = $('#btnCatalog'); btn.disabled = true;
     const cfg = state.cfg, center = cfg.center;
-    const radiusKm = Math.min(60, Math.max(15, cfg.maxMin * 1.5));
+    const radiusKm = noLimit() ? 45 : Math.min(60, Math.max(15, cfg.maxMin * 1.5));
     try {
       progress('#catProgress', 5, 'Consultando OpenStreetMap…');
       let places = await G.fetchSettlements(center, radiusKm, t => progress('#catProgress', 10, t));
       progress('#catProgress', 25, `${places.length} asentamientos encontrados. Calculando tiempos…`);
       // descarta lo que ni a 100 km/h en línea recta llega en el límite
       const far = [], near = [];
-      places.forEach(p => (p.distKm / 100 * 60 > cfg.maxMin * 1.2 ? far : near).push(p));
+      places.forEach(p => (!noLimit() && p.distKm / 100 * 60 > cfg.maxMin * 1.2 ? far : near).push(p));
       far.forEach(p => { p.minutes = +C.estimateDriveMin(center, p).toFixed(1); p.km = +(p.distKm * 1.35).toFixed(1); p.timeSource = 'estimado'; });
       let source = 'OSRM (OpenStreetMap, sin tráfico)';
       const onP = t => { const m = t.match(/(\d+)\/(\d+)/); progress('#catProgress', m ? 25 + 70 * (+m[1] / +m[2]) : 50, t); };
@@ -237,7 +257,7 @@
     const places = state.catalog ? state.catalog.places : [];
     if (!state.index) state.index = C.buildIndex(places);
     const byId = new Map(places.map(p => [p.id, p]));
-    const inRange = p => p && eff(p.minutes, p.timeSource) != null && eff(p.minutes, p.timeSource) <= cfg.maxMin;
+    const inRange = p => p && (noLimit() || (eff(p.minutes, p.timeSource) != null && eff(p.minutes, p.timeSource) <= cfg.maxMin));
     const visits = state.visits = buildVisits();
 
     // 1) ubicar cada visita
@@ -253,18 +273,19 @@
         v.place = best;
       } else {
         let r = v.colonia ? C.matchPlace(v.colonia, state.index, center) : null;
-        if (!r) r = C.scanAddress([v.direccion, v.colonia, v.referencias].join(' '), state.index, center);
-        if (r) { v.place = r.place; v.method = r.method; v.score = r.score; }
+        // Buscar dentro del domicilio solo si no hay colonia (evita que una calle "Hidalgo" se confunda con "Rancho Hidalgo")
+        if (!r && !v.colonia) r = C.scanAddress([v.direccion, v.referencias].join(' '), state.index, center);
+        if (r) { v.place = r.place; v.method = r.method; v.score = r.score; v.options = r.options || 1; }
       }
       v.minutes = v.own && !v.place ? eff(C.estimateDriveMin(center, v.own)) : (v.place ? eff(v.place.minutes, v.place.timeSource) : null);
-      v.status = (!v.place && !v.own) ? 'none' : (v.minutes > cfg.maxMin ? 'fuera' : 'ok');
+      v.status = (!v.place && !v.own) ? 'none' : (!noLimit() && v.minutes > cfg.maxMin ? 'fuera' : 'ok');
     });
 
     // 2) nodos: asentamientos en radio + visitas con coordenadas propias sin asentamiento
     const nodes = new Map();
     places.filter(inRange).forEach(p => nodes.set(p.id, {
-      id: p.id, name: p.name, type: p.type, lat: p.lat, lng: p.lng, minutes: eff(p.minutes, p.timeSource), km: p.km,
-      distKm: p.distKm, bearing: p.bearing, timeSource: p.timeSource, list: []
+      id: p.id, name: p.name, type: p.type, cp: p.cp || '', lat: p.lat, lng: p.lng, minutes: eff(p.minutes, p.timeSource), km: p.km,
+      distKm: p.distKm, bearing: p.bearing, timeSource: p.timeSource, zona: p.zona, list: []
     }));
     visits.filter(v => v.status === 'ok').forEach(v => {
       if (v.place && nodes.has(v.place.id)) { nodes.get(v.place.id).list.push(v); return; }
@@ -283,9 +304,24 @@
     if (!N.length) { state.result = null; renderAll(); return; }
 
     // 3) sectores
-    let part = C.orderSectors(C.partitionSectors(N, 3), N, 3);
-    const cuts = part.cuts;
-    const names = C.sectorNames(part.means);
+    const cat = state.catalog || {};
+    let part, cuts, names;
+    if (cat.fixedZones) {
+      cuts = cat.cuts.slice().sort((a, b) => a - b); names = cat.zoneNames.slice();
+      const assign = new Map();
+      const fixed = N.filter(n => n.zona != null);
+      N.forEach(n => {
+        if (n.zona != null) { assign.set(n.id, n.zona); return; }
+        // ubicación propia: zona del asentamiento oficial más cercano
+        let best = null, bd = Infinity;
+        fixed.forEach(f => { const d = C.haversineKm(n, f); if (d < bd) { bd = d; best = f; } });
+        assign.set(n.id, best ? best.zona : 0);
+      });
+      part = { assign };
+    } else {
+      part = C.orderSectors(C.partitionSectors(N, 3), N, 3);
+      cuts = part.cuts; names = C.sectorNames(part.means);
+    }
     // sector de cada arco (mayoría) para conocer vecinos
     const arcOf = b => { for (let j = 0; j < cuts.length; j++) { const a = cuts[j], z = cuts[(j + 1) % cuts.length]; const span = (z - a + 360) % 360 || 360; if ((b - a + 360) % 360 < span) return j; } return 0; };
     const arcVotes = cuts.map(() => [0, 0, 0]);
@@ -344,13 +380,13 @@
     const fuera = c(v => v.status === 'fuera'), none = c(v => v.status === 'none');
     $('#matchKpis').innerHTML = `
       <div class="kpi ok"><b>${exact}</b><span>Ubicadas exactas</span></div>
-      <div class="kpi"><b>${approx}</b><span>Aproximadas / en dirección / geocodificadas</span></div>
-      <div class="kpi warn"><b>${fuera}</b><span>Fuera de ${state.cfg.maxMin} min</span></div>
+      <div class="kpi"><b>${approx}</b><span>Por revisar (nombre repetido / aproximadas)</span></div>
+      <div class="kpi warn"><b>${fuera}</b><span>${noLimit() ? 'Fuera de radio (sin límite)' : 'Fuera de ' + state.cfg.maxMin + ' min'}</span></div>
       <div class="kpi bad"><b>${none}</b><span>Sin ubicar</span></div>`;
     const pend = V.filter(v => v.status === 'none');
     const fz = V.filter(v => v.status === 'fuera');
     $('#pendActions').innerHTML = (pend.length ? `<button class="btn primary sm" id="btnGeo">Geocodificar pendientes (${pend.length})</button>` : '') +
-      (approx ? `<button class="btn ghost sm" id="btnShowApprox">Revisar aproximadas (${approx})</button>` : '');
+      (approx ? `<button class="btn ghost sm" id="btnShowApprox">Revisar repetidas y aproximadas (${approx})</button>` : '');
     const places = state.catalog ? state.catalog.places : [];
     let dl = $('#placesList');
     if (!dl) { dl = document.createElement('datalist'); dl.id = 'placesList'; document.body.appendChild(dl); }
@@ -580,52 +616,185 @@
   }
 
   // ============================================================ EXPORTAR
-  $('#btnExport').addEventListener('click', () => {
-    const r = state.result; if (!r) return;
-    const wb = XLSX.utils.book_new();
-    const x = state.excel;
-    const sec = v => v.sector != null ? r.sectors[v.sector] : null;
-    const mapsQ = v => v.own ? `${v.own.lat},${v.own.lng}` : (addressOf(v) || (v.place ? `${v.place.lat},${v.place.lng}` : ''));
-    if (x) {
-      const head = [...x.headers, 'Verificador', 'Zona', 'Día', 'Orden parada', 'Asentamiento detectado', 'Tipo', 'Min desde centro', 'Método', 'Estado', 'Google Maps'];
-      const rows = state.visits.map(v => {
-        const s = sec(v), q = mapsQ(v);
-        return [...x.headers.map((_, i) => v.row[i] ?? ''), s ? s.verif : '', s ? s.name : '', v.day ?? '', v.order ?? '',
-          v.place ? v.place.name : (v.own ? 'Ubicación propia' : ''), v.place ? v.place.type : '', v.minutes != null ? Math.round(v.minutes) : '',
-          v.method, { ok: 'Asignada', fuera: 'Fuera de radio', none: 'Sin ubicar' }[v.status],
-          q ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q) : ''];
-      });
-      XLSX.utils.book_append_sheet(wb, sheet([head, ...rows]), 'Asignación');
-      r.sectors.forEach(s => {
-        const h = ['Día', 'Orden', 'Asentamiento', 'Tipo', 'Min', 'Folio', 'Nombre', 'Domicilio', 'Teléfono', 'Referencias', 'Google Maps', 'Hecho'];
-        const rr = [];
-        s.days.forEach(d => d.stops.forEach((st, k) => st.visits.forEach(v => {
-          const q = mapsQ(v);
-          rr.push([d.day, k + 1, st.label, st.type, Math.round(st.minutes || 0), v.id, v.nombre, v.direccion, v.telefono, v.referencias,
-            q ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q) : '', state.done[v.key] ? 'Sí' : '']);
-        })));
-        XLSX.utils.book_append_sheet(wb, sheet([h, ...rr]), safeName(`${s.verif} - ${s.name}`));
-      });
+  // Excel con formato (ExcelJS): encabezados, anchos legibles, ajuste de texto, colores por zona, filtros y ligas.
+  let exLoading = null;
+  function loadExcelJS() {
+    if (window.ExcelJS) return Promise.resolve();
+    if (exLoading) return exLoading;
+    exLoading = new Promise((res, rej) => {
+      const sc = document.createElement('script'); sc.src = 'js/vendor/exceljs.min.js';
+      sc.onload = () => res(); sc.onerror = () => { exLoading = null; rej(new Error('No se pudo cargar el generador de Excel')); };
+      document.head.appendChild(sc);
+    });
+    return exLoading;
+  }
+  const ZONE_FILL = ['FFDBE7FB', 'FFFDE3D3', 'FFD7F0E3'], ZONE_INK = ['FF1E3A8A', 'FF9A3412', 'FF14532D'];
+  const STATUS_FILL = { 'Asignada': 'FFC6EFCE', 'Revisar': 'FFFFE699', 'Sin ubicar': 'FFF8CBAD', 'Fuera de radio': 'FFF8CBAD' };
+  const FONT = 'Arial';
+  const fill = argb => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
+  const thin = { style: 'thin', color: { argb: 'FFD9D9D9' } };
+  const BORDER = { top: thin, left: thin, bottom: thin, right: thin };
+  const mapsUrl = q => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q);
+
+  /** Agrega una tabla legible: cols = [{h, w?, min?, max?, wrap?, num?, link?, center?}] */
+  function addTable(wb, name, cols, rows, opt) {
+    opt = opt || {};
+    const ws = wb.addWorksheet(safeName(name), {
+      views: [{ state: 'frozen', ySplit: (opt.top || 0) + 1, xSplit: opt.freezeCols || 0 }],
+      pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 1, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } }
+    });
+    if (opt.title) {
+      ws.addRow([opt.title]); const t = ws.getRow(1); t.font = { name: FONT, bold: true, size: 14, color: { argb: 'FF0B1F33' } }; t.height = 24;
+      if (opt.subtitle) { ws.addRow([opt.subtitle]); ws.getRow(2).font = { name: FONT, italic: true, size: 10, color: { argb: 'FF666666' } }; }
+      while (ws.rowCount < (opt.top || 0)) ws.addRow([]);
     }
-    const ch = ['Zona', 'Verificador', 'Nombre', 'Tipo', 'Min (con tráfico)', 'Km', 'Visitas', 'Frontera', 'Asignación', 'Lat', 'Lng'];
-    const cr = r.nodes.slice().sort((a, b) => a.sector - b.sector || a.name.localeCompare(b.name, 'es')).map(n => [
-      r.sectors[n.sector].name, r.sectors[n.sector].verif, n.name, n.type, Math.round(n.minutes), n.km, n.visits,
-      n.border.shared ? (n.border.reason === 'centro' ? 'Centro (comodín)' : 'Con ' + (r.sectors[n.neighbor]?.verif || '')) : '',
-      state.overrides[n.id] != null ? 'Manual' : 'Automática', n.lat, n.lng]);
-    XLSX.utils.book_append_sheet(wb, sheet([ch, ...cr]), 'Catálogo por zona');
-    XLSX.utils.book_append_sheet(wb, sheet([['Tipo', 'Título', 'Detalle'], ...r.recs.map(x => [x.level, x.title, x.body])]), 'Estrategia');
-    const pend = state.visits.filter(v => v.status !== 'ok');
-    if (pend.length) XLSX.utils.book_append_sheet(wb, sheet([['Estado', 'Folio', 'Nombre', 'Domicilio', 'Colonia', 'Asentamiento más parecido', 'Min'],
-      ...pend.map(v => [v.status === 'fuera' ? 'Fuera de radio' : 'Sin ubicar', v.id, v.nombre, v.direccion, v.colonia, v.place ? v.place.name : '', v.minutes != null ? Math.round(v.minutes) : ''])]), 'Pendientes');
-    const d = new Date().toISOString().slice(0, 10);
-    XLSX.writeFile(wb, `asignacion-verificadores-${d}.xlsx`);
-  });
-  function sheet(aoa) {
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = aoa[0].map((_, i) => ({ wch: Math.min(48, Math.max(8, ...aoa.slice(0, 200).map(r => String(r[i] ?? '').length))) }));
-    ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: aoa[0].length - 1 } }) };
+    const hr = ws.addRow(cols.map(c => c.h));
+    hr.height = 32;
+    hr.eachCell(c => {
+      c.font = { name: FONT, bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      c.fill = fill('FF0B1F33'); c.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }; c.border = BORDER;
+    });
+    const headerRow = hr.number;
+    rows.forEach(r => {
+      if (r && r.__section) {
+        const sr = ws.addRow([r.__section]); ws.mergeCells(sr.number, 1, sr.number, cols.length);
+        sr.getCell(1).font = { name: FONT, bold: true, size: 11, color: { argb: 'FF0B1F33' } };
+        sr.getCell(1).fill = fill('FFE7ECF3'); sr.height = 22; sr.getCell(1).alignment = { vertical: 'middle' };
+        return;
+      }
+      const vals = cols.map((c, i) => {
+        const v = r.v[i];
+        if (c.link && v) return { text: c.linkText || 'Abrir mapa', hyperlink: v };
+        return v == null ? '' : v;
+      });
+      const row = ws.addRow(vals);
+      row.eachCell({ includeEmpty: true }, (cell, ci) => {
+        const c = cols[ci - 1]; if (!c) return;
+        cell.font = c.link && r.v[ci - 1] ? { name: FONT, size: 10, color: { argb: 'FF0563C1' }, underline: true } : { name: FONT, size: 10 };
+        cell.alignment = { vertical: 'top', wrapText: !!c.wrap, horizontal: c.num || c.center ? 'center' : 'left' };
+        cell.border = BORDER;
+        if (c.num && typeof cell.value === 'number') cell.numFmt = c.fmt || '0';
+      });
+      if (r.zone != null && opt.zoneCols) opt.zoneCols.forEach(ci => {
+        const cell = row.getCell(ci); cell.fill = fill(ZONE_FILL[r.zone]); cell.font = { name: FONT, size: 10, bold: true, color: { argb: ZONE_INK[r.zone] } };
+      });
+      if (r.status && opt.statusCol) { const cell = row.getCell(opt.statusCol); cell.fill = fill(STATUS_FILL[r.status] || 'FFFFFFFF'); cell.font = { name: FONT, size: 10, bold: true }; }
+      if (r.bold) row.font = { name: FONT, size: 10, bold: true };
+    });
+    // anchos: contenido real (máx. 200 filas), con mínimos y máximos legibles
+    cols.forEach((c, i) => {
+      let w = c.w;
+      if (!w) {
+        let mx = String(c.h).length * 0.9;
+        rows.slice(0, 300).forEach(r => { if (r && r.v) { const v = r.v[i]; const l = c.link ? 11 : String(v == null ? '' : v).length; if (l > mx) mx = l; } });
+        w = Math.max(c.min || 10, Math.min(c.max || 45, Math.ceil(mx + 3)));
+      }
+      ws.getColumn(i + 1).width = w;
+    });
+    const last = ws.rowCount;
+    if (last > headerRow && !opt.noFilter) ws.autoFilter = { from: { row: headerRow, column: 1 }, to: { row: last, column: cols.length } };
     return ws;
   }
+
+  function statusOf(v) {
+    if (v.status === 'none') return 'Sin ubicar';
+    if (v.status === 'fuera') return 'Fuera de radio';
+    return (v.options > 1 || v.method === 'aproximada' || v.method === 'en dirección') ? 'Revisar' : 'Asignada';
+  }
+
+  $('#btnExport').addEventListener('click', async () => {
+    const r = state.result; if (!r) return;
+    const btn = $('#btnExport'); btn.disabled = true; const label = btn.textContent; btn.textContent = 'Generando…';
+    try {
+      await loadExcelJS();
+      const wb = new ExcelJS.Workbook(); wb.creator = 'Rutas Verificadores'; wb.created = new Date();
+      const x = state.excel, cfg = state.cfg;
+      const fecha = new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' });
+      const sec = v => v.sector != null ? r.sectors[v.sector] : null;
+      const mapsQ = v => v.own ? `${v.own.lat},${v.own.lng}` : (addressOf(v) || (v.place ? `${v.place.lat},${v.place.lng}` : ''));
+      const how = v => v.method === 'nombre repetido' ? `Nombre repetido (${v.options} opciones)` : (v.method || '');
+
+      // 1) Resumen
+      const tot = r.sectors.map(s => ({ s, h: s.days.reduce((a, d) => a + d.workMin, 0) / 60, km: s.days.reduce((a, d) => a + d.km, 0) }));
+      const resumenRows = tot.map(({ s, h, km }) => ({ zone: s.idx, v: [s.verif, 'Zona ' + s.name, s.visits, s.days.length, +h.toFixed(1), Math.round(km),
+        state.visits.filter(v => v.sector === s.idx && statusOf(v) === 'Revisar').length, s.nodes.length] }));
+      const V = state.visits;
+      resumenRows.push({ bold: true, v: ['Total', '', V.filter(v => v.status === 'ok').length, Math.max(0, ...r.sectors.map(s => s.days.length)), +tot.reduce((a, t) => a + t.h, 0).toFixed(1), Math.round(tot.reduce((a, t) => a + t.km, 0)), V.filter(v => statusOf(v) === 'Revisar').length, r.nodes.length] });
+      resumenRows.push({ v: ['Sin ubicar', '', V.filter(v => v.status === 'none').length, '', '', '', '', ''] });
+      if (!noLimit()) resumenRows.push({ v: ['Fuera de radio', '', V.filter(v => v.status === 'fuera').length, '', '', '', '', ''] });
+      addTable(wb, 'Resumen', [
+        { h: 'Verificador', min: 22 }, { h: 'Zona', min: 18 }, { h: 'Visitas', num: true, w: 11 }, { h: 'Días', num: true, w: 9 },
+        { h: 'Horas estimadas', num: true, w: 12, fmt: '0.0' }, { h: 'Km estimados', num: true, w: 12 }, { h: 'Por revisar', num: true, w: 12 }, { h: 'Asentamientos en la zona', num: true, w: 15 }
+      ], resumenRows, { title: 'Asignación de visitas por verificador', subtitle: `${x ? x.fileName + ' · ' : ''}${fecha} · Salida: ${BASE_LABEL} · ${cfg.visitMin} min por visita, jornada ${cfg.dayH} h`, top: 3, zoneCols: [1, 2], noFilter: true });
+
+      // 2) Asignación (tu Excel original + columnas de asignación)
+      if (x) {
+        const orig = x.headers.map((h, i) => ({ h, wrap: true, max: 40, min: 9, i }));
+        const add = [
+          { h: 'Verificador', min: 16 }, { h: 'Zona', min: 14 }, { h: 'Día', num: true, w: 7 }, { h: 'Orden parada', num: true, w: 9 },
+          { h: 'Asentamiento oficial', wrap: true, min: 22, max: 40 }, { h: 'Tipo', min: 13 }, { h: 'C.P.', center: true, w: 8 },
+          { h: 'Min desde Caja Hipódromo', num: true, w: 13 }, { h: 'Cómo se encontró', min: 14, max: 26, wrap: true }, { h: 'Estado', min: 13 }, { h: 'Google Maps', link: true, w: 13 }
+        ];
+        const rows = V.map(v => {
+          const s = sec(v), q = mapsQ(v), st = statusOf(v);
+          return { zone: s ? s.idx : null, status: st, v: [...x.headers.map((_, i) => v.row[i] ?? ''), s ? s.verif : '', s ? 'Zona ' + s.name : '', v.day ?? '', v.order ?? '',
+            v.place ? v.place.name : (v.own ? 'Ubicación propia' : ''), v.place ? v.place.type : '', v.place ? (v.place.cp || '') : '',
+            v.minutes != null ? Math.round(v.minutes) : '', how(v), st, q ? mapsUrl(q) : ''] };
+        });
+        const n0 = orig.length;
+        addTable(wb, 'Asignación', [...orig, ...add], rows, { zoneCols: [n0 + 1, n0 + 2], statusCol: n0 + 10, freezeCols: Math.min(2, n0) });
+      }
+
+      // 3) Una hoja por verificador, en orden de ruta y separada por día
+      r.sectors.forEach(s => {
+        const rows = [];
+        s.days.forEach(d => {
+          rows.push({ __section: `Día ${d.day} · ${d.visits} visitas · ${d.stops.length} paradas · ~${(d.workMin / 60).toFixed(1)} h · ${d.km} km` });
+          d.stops.forEach((st, k) => st.visits.forEach(v => {
+            const q = mapsQ(v);
+            rows.push({ zone: s.idx, status: statusOf(v), v: [d.day, k + 1, st.label, st.type, Math.round(st.minutes || 0), v.id, v.nombre, v.direccion, v.telefono, v.referencias, q ? mapsUrl(q) : '', statusOf(v), state.done[v.key] ? '☑' : '☐'] });
+          }));
+        });
+        addTable(wb, `${s.verif} - ${s.name}`, [
+          { h: 'Día', num: true, w: 6 }, { h: 'Parada', num: true, w: 8 }, { h: 'Colonia / asentamiento', wrap: true, min: 22, max: 34 }, { h: 'Tipo', min: 12, max: 16 },
+          { h: 'Min desde Caja Hipódromo', num: true, w: 12 }, { h: 'Folio', min: 10, max: 16 }, { h: 'Nombre', wrap: true, min: 22, max: 34 }, { h: 'Domicilio', wrap: true, min: 26, max: 40 },
+          { h: 'Teléfono', min: 12, max: 16 }, { h: 'Referencias', wrap: true, min: 16, max: 34 }, { h: 'Google Maps', link: true, w: 13 }, { h: 'Estado', min: 11 }, { h: 'Hecho', center: true, w: 8 }
+        ], rows, { title: `${s.verif} · Zona ${s.name}`, subtitle: `${s.visits} visitas · ${s.days.length} día(s) · salida desde ${BASE_LABEL}`, top: 3, statusCol: 12 });
+      });
+
+      // 4) Catálogo por zona (alfabético dentro de cada zona)
+      const crow = r.nodes.slice().sort((a, b) => a.sector - b.sector || a.name.localeCompare(b.name, 'es')).map(n => ({ zone: n.sector, v: [
+        'Zona ' + r.sectors[n.sector].name, r.sectors[n.sector].verif, n.name, n.type, n.cp || '', Math.round(n.minutes || 0), n.km ?? '', n.visits || '',
+        n.border && n.border.shared ? (n.border.reason === 'centro' ? 'Centro (comodín)' : 'Frontera con ' + (r.sectors[n.neighbor]?.verif || '')) : '',
+        state.overrides[n.id] != null ? 'Manual' : 'Oficial', mapsUrl(n.lat + ',' + n.lng)] }));
+      addTable(wb, 'Catálogo por zona', [
+        { h: 'Zona', min: 15 }, { h: 'Verificador', min: 16 }, { h: 'Nombre', wrap: true, min: 26, max: 42 }, { h: 'Tipo', min: 13 }, { h: 'C.P.', center: true, w: 8 },
+        { h: 'Min desde Caja Hipódromo', num: true, w: 13 }, { h: 'Km', num: true, w: 8, fmt: '0.0' }, { h: 'Visitas', num: true, w: 9 }, { h: 'Frontera', min: 14, max: 28, wrap: true },
+        { h: 'Asignación', min: 11 }, { h: 'Google Maps', link: true, w: 13 }
+      ], crow, { zoneCols: [1, 2], freezeCols: 3 });
+
+      // 5) Estrategia
+      const lvl = { clave: 'Clave', ruta: 'Ruta', compartir: 'Trabajo compartido', alerta: 'Atención' };
+      addTable(wb, 'Estrategia', [{ h: 'Tipo', w: 18 }, { h: 'Recomendación', w: 42, wrap: true }, { h: 'Detalle', w: 100, wrap: true }],
+        r.recs.map(rc => ({ zone: rc.sector != null && rc.level === 'ruta' ? rc.sector : null, v: [lvl[rc.level] || rc.level, rc.title, rc.body] })), { zoneCols: [1], noFilter: true });
+
+      // 6) Pendientes
+      const pend = V.filter(v => statusOf(v) !== 'Asignada');
+      if (pend.length) addTable(wb, 'Pendientes', [
+        { h: 'Estado', min: 12 }, { h: 'Folio', min: 10, max: 16 }, { h: 'Nombre', wrap: true, min: 22, max: 34 }, { h: 'Domicilio', wrap: true, min: 26, max: 40 },
+        { h: 'Colonia en tu Excel', wrap: true, min: 20, max: 34 }, { h: 'Se asignó a', wrap: true, min: 22, max: 36 }, { h: 'Cómo se encontró', min: 16, max: 26, wrap: true }, { h: 'Zona', min: 14 }
+      ], pend.map(v => ({ status: statusOf(v), zone: v.sector, v: [statusOf(v), v.id, v.nombre, v.direccion, v.colonia, v.place ? `${v.place.name} (${v.place.type}${v.place.cp ? ', C.P. ' + v.place.cp : ''})` : '', how(v), v.sector != null ? 'Zona ' + r.sectors[v.sector].name : ''] })),
+        { statusCol: 1, zoneCols: [8] });
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = `asignacion-verificadores-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+      toast('Excel generado');
+    } catch (e) { toast('No se pudo generar el Excel: ' + e.message, 6000); }
+    finally { btn.disabled = false; btn.textContent = label; }
+  });
   const safeName = s => s.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31);
 
   // ============================================================== AJUSTES
@@ -641,7 +810,7 @@
   $('#btnSaveCfg').addEventListener('click', () => {
     const c = state.cfg, num = (s, d) => { const v = parseFloat($(s).value); return isNaN(v) ? d : v; };
     c.verifs = $$('[data-vn]').map((i, k) => i.value.trim() || `Verificador ${k + 1}`);
-    c.maxMin = num('#cfgMaxMin', 20); c.traffic = num('#cfgTraffic', 1.1); c.visitMin = num('#cfgVisitMin', 20);
+    c.maxMin = num('#cfgMaxMin', 0); save('cfgMaxMinTouched', true); c.traffic = num('#cfgTraffic', 1.1); c.visitMin = num('#cfgVisitMin', 20);
     c.dayH = num('#cfgDayH', 8); c.maxPerDay = num('#cfgMaxDay', 0); c.farFirst = $('#cfgFarFirst').value === '1';
     const ce = parseLL($('#cfgCenter').value); if (ce) c.center = ce;
     c.base = parseLL($('#cfgBase').value);

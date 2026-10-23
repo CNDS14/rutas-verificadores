@@ -108,3 +108,11 @@ Al publicar una nueva versión, cambia `VERSION` en `sw.js` para forzar la actua
 - OSRM/Overpass son servidores públicos gratuitos: si están saturados, reintenta en unos minutos; los tiempos que fallen se marcan **≈ estimado**.
 - La cobertura de colonias en OpenStreetMap es buena en la mancha urbana pero puede faltar algún fraccionamiento nuevo: agrégalo con *Importar catálogo* (columnas `Nombre, Tipo, Lat, Lng`) o reexporta el catálogo, edítalo y vuelve a importarlo.
 - OSRM no considera tráfico; por eso existe el factor de tráfico (o usa la llave de Google).
+
+## Catálogo oficial incluido (v1.3)
+
+- `js/catalogo.js` trae **1,029 asentamientos** del municipio de Durango (SEPOMEX 2021 + OpenStreetMap) con **3 zonas fijas** (Noreste, Sureste, Poniente), C.P., tiempos con tráfico desde Caja Hipódromo Matriz y coordenadas.
+- La app lo usa por defecto: **el cruce del Excel funciona sin internet de mapas** (útil en redes con páginas bloqueadas). "Actualizar desde mapas" es opcional.
+- Límite de minutos por defecto: **0 = sin límite** (todas las colonias y poblados).
+- El cruce reconoce prefijos (Col., Fracc., Ejido…), acentos, romanos/números (Huizache II = 2), "Amp."/"Ampliación" y "Zona Centro". Los nombres repetidos (p. ej. Benito Juárez) salen como **Revisar**.
+- Exportación con formato (ExcelJS): hoja Resumen, Asignación (tu Excel + verificador, zona, día, orden, asentamiento, C.P., minutos, estado, liga), una hoja por verificador separada por día, Catálogo por zona, Estrategia y Pendientes.

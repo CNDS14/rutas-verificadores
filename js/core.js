@@ -75,6 +75,12 @@
       .replace(/\s+/g, ' ').trim();
     for (let i = 0; i < 3; i++) { const n = t.replace(PREFIX_RE, '').trim(); if (n === t) break; t = n; }
     t = t.replace(/\b(durango|dgo|mexico|mex)\b/g, ' ').replace(/\s+/g, ' ').trim();
+    // romanos finales → número (Huizache II = Huizache 2)
+    t = t.replace(/\s(i|ii|iii|iv|v|vi)$/, (m, r) => ' ' + ({ i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6 })[r]);
+    // "ampliacion x" / "x ampliacion" / "amp x"
+    t = t.replace(/^(amp|ampl)\s/, 'ampliacion ').replace(/^(.+)\sampliacion$/, 'ampliacion $1');
+    // Zona Centro (al quitar "Durango" queda "victoria de centro")
+    if (/^(zona centro|centro|centro historico|zona centro historico|victoria de centro|victoria centro)$/.test(t)) t = 'centro';
     return t;
   }
 
@@ -149,7 +155,10 @@
     if (index.cache.has(ck)) return index.cache.get(ck);
     let res = null;
     const exact = index.byNorm.get(norm) || index.byNorm.get(baseName(norm));
-    if (exact) res = { place: pickClosest(exact, center), score: 1, method: 'exacta' };
+    if (exact) {
+      const ids = new Set(exact.map(p => p.id));
+      res = { place: pickClosest(exact, center), score: 1, method: ids.size > 1 ? 'nombre repetido' : 'exacta', options: ids.size };
+    }
     if (!res) {
       const g = bigrams(norm); let best = null, bs = 0;
       for (const e of index.entries) {
