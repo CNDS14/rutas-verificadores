@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Rutas Verificadores · Durango</title>
+  <meta name="description" content="Zonificación de Durango en 3 sectores y asignación de visitas a verificadores con rutas optimizadas.">
+  <meta name="theme-color" content="#0B1F33">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="js/vendor/leaflet.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon-192.png" alt="" width="32" height="32">
+      <div>
+        <strong>Rutas Verificadores</strong>
+        <span id="subtitle">Durango · 3 zonas</span>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button class="btn ghost" id="btnExport" disabled title="Exportar asignación a Excel">⬇ Excel</button>
+      <button class="btn ghost hide-sm" id="btnInstall" hidden>Instalar</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="cargar" class="active"><span>①</span>Cargar</button>
+    <button data-tab="zonas"><span>◎</span>Zonas</button>
+    <button data-tab="rutas"><span>➜</span>Rutas</button>
+    <button data-tab="estrategia"><span>★</span>Estrategia</button>
+    <button data-tab="ajustes"><span>⚙</span>Ajustes</button>
+  </nav>
+
+  <main>
+    <!-- ======================= CARGAR ======================= -->
+    <section id="tab-cargar" class="tab active">
+      <div class="card step">
+        <div class="step-head"><span class="num">1</span><div><h2>Catálogo de zonas</h2><p class="muted">Colonias, fraccionamientos, poblados y rancherías a no más de <b class="v-maxmin">20</b> min en auto del centro.</p></div></div>
+        <div id="catStatus" class="status">Aún no se ha generado el catálogo.</div>
+        <div class="row gap">
+          <button class="btn primary" id="btnCatalog">Generar catálogo</button>
+          <label class="btn ghost file-btn">Importar catálogo (.xlsx)<input type="file" id="catFile" accept=".xlsx,.xls,.csv"></label>
+        </div>
+        <div class="progress" id="catProgress" hidden><div></div><span></span></div>
+      </div>
+
+      <div class="card step">
+        <div class="step-head"><span class="num">2</span><div><h2>Excel de visitas</h2><p class="muted">Se detectan automáticamente nombre, domicilio, colonia y coordenadas. Puedes corregir el mapeo.</p></div></div>
+        <label class="drop" id="drop">
+          <input type="file" id="xlsFile" accept=".xlsx,.xls,.csv">
+          <strong>Subir Excel</strong><span class="muted">o arrastra el archivo aquí (.xlsx, .xls, .csv)</span>
+        </label>
+        <div id="xlsInfo" class="status" hidden></div>
+        <div id="mapping" class="mapping" hidden></div>
+        <div class="row gap" id="mapActions" hidden>
+          <button class="btn primary" id="btnProcess">Procesar y asignar</button>
+        </div>
+      </div>
+
+      <div class="card step" id="matchCard" hidden>
+        <div class="step-head"><span class="num">3</span><div><h2>Ubicación de visitas</h2><p class="muted">Cómo se relacionó cada visita con el catálogo.</p></div></div>
+        <div class="kpis" id="matchKpis"></div>
+        <div class="row gap" id="pendActions"></div>
+        <div id="pendList"></div>
+      </div>
+    </section>
+
+    <!-- ======================= ZONAS ======================= -->
+    <section id="tab-zonas" class="tab">
+      <div class="zone-cards" id="zoneCards"></div>
+      <div class="card map-card"><div id="map"></div>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="card">
+        <div class="list-head">
+          <h2>Catálogo por zona <small class="muted" id="catCount"></small></h2>
+          <div class="filters">
+            <input type="search" id="catSearch" placeholder="Buscar colonia, fracc., poblado…">
+            <select id="catZone"><option value="">Todas las zonas</option></select>
+            <select id="catType"><option value="">Todos los tipos</option></select>
+            <label class="chk"><input type="checkbox" id="catOnlyVisits"> Solo con visitas</label>
+          </div>
+        </div>
+        <div class="table-wrap"><table class="tbl" id="catTable"><thead><tr><th>Nombre</th><th>Tipo</th><th class="num">Min</th><th class="num">Km</th><th class="num">Visitas</th><th>Zona / verificador</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ======================= RUTAS ======================= -->
+    <section id="tab-rutas" class="tab">
+      <div class="chips" id="verifChips"></div>
+      <div id="routeSummary" class="card"></div>
+      <div id="routeDays"></div>
+    </section>
+
+    <!-- ===================== ESTRATEGIA ===================== -->
+    <section id="tab-estrategia" class="tab">
+      <div id="recs"></div>
+    </section>
+
+    <!-- ======================= AJUSTES ======================= -->
+    <section id="tab-ajustes" class="tab">
+      <div class="card">
+        <h2>Verificadores</h2>
+        <div class="grid3" id="verifNames"></div>
+      </div>
+      <div class="card">
+        <h2>Radio y tiempos</h2>
+        <div class="grid2">
+          <label>Límite en auto desde el centro (min)<input type="number" id="cfgMaxMin" min="5" max="90" step="1"></label>
+          <label>Factor de tráfico (1.0 = sin tráfico)<input type="number" id="cfgTraffic" min="1" max="2" step="0.05"></label>
+          <label>Minutos por visita<input type="number" id="cfgVisitMin" min="5" max="180" step="5"></label>
+          <label>Jornada de trabajo (horas)<input type="number" id="cfgDayH" min="2" max="12" step="0.5"></label>
+          <label>Máx. visitas por día (0 = sin límite)<input type="number" id="cfgMaxDay" min="0" max="100" step="1"></label>
+          <label>Orden del día
+            <select id="cfgFarFirst"><option value="1">Primero lo más lejano, regresar hacia la base</option><option value="0">Primero lo más cercano, terminar lejos</option></select>
+          </label>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Centro y base</h2>
+        <div class="grid2">
+          <label>Centro de la ciudad (lat, lng)<input type="text" id="cfgCenter" placeholder="24.0245, -104.6700"></label>
+          <label>Base / oficina de salida (lat, lng)<input type="text" id="cfgBase" placeholder="24.0244475, -104.6414927 (Caja Hipódromo Matriz)"></label>
+        </div>
+        <div class="row gap"><button class="btn ghost" id="btnMyLoc">Usar mi ubicación como base</button></div>
+        <p class="muted small">El centro define el radio de 20 min y el reparto en sectores. La base es desde donde salen los verificadores cada día.</p>
+      </div>
+      <div class="card">
+        <h2>Google Maps (opcional)</h2>
+        <label>API key de Google Maps<input type="password" id="cfgGKey" placeholder="AIza…" autocomplete="off"></label>
+        <p class="muted small">Sin llave se usa OpenStreetMap + OSRM (gratis). Con llave se calculan los tiempos con <b>Distance Matrix con tráfico</b> (día hábil 10:00) y la geocodificación con Google. Restringe la llave a tu dominio de GitHub Pages. Se guarda solo en este dispositivo.</p>
+      </div>
+      <div class="row gap">
+        <button class="btn primary" id="btnSaveCfg">Guardar y recalcular</button>
+        <button class="btn danger ghost" id="btnReset">Borrar datos locales</button>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="js/vendor/xlsx.full.min.js"></script>
+  <script src="js/vendor/leaflet.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/geo.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
