@@ -49,7 +49,12 @@
     return { places, center: Object.assign({}, BUNDLED.center), radiusKm: 0, source: BUNDLED.source, fetchedAt: Date.parse(BUNDLED.version + 'T12:00:00'),
       bundled: BUNDLED.version, fixedZones: true, zoneNames: BUNDLED.zoneNames, cuts: BUNDLED.cuts };
   }
-  if (!state.catalog || (state.catalog.bundled && state.catalog.bundled !== (BUNDLED && BUNDLED.version))) {
+  // Catálogos viejos guardados (de versiones anteriores, 20 min) se reemplazan por el oficial; solo se respeta uno que el usuario eligió.
+  if (!state.catalog || !state.catalog.userChosen || (state.catalog.bundled && state.catalog.bundled !== (BUNDLED && BUNDLED.version))) {
+    if (state.catalog && !state.catalog.userChosen) {   // había un catálogo viejo guardado: sus cambios de zona ya no aplican
+      try { localStorage.removeItem(LS + 'catalog'); localStorage.removeItem(LS + 'overrides'); } catch (e) {}
+      state.overrides = {};
+    }
     state.catalog = bundledCatalog();
     // no se guarda en localStorage: viene incluido en la app
   }
@@ -121,7 +126,7 @@
       places = near.concat(far);
       const est = near.filter(p => p.timeSource === 'estimado').length;
       if (est) source += ` · ${est} estimados`;
-      state.catalog = { places, center: Object.assign({}, center), radiusKm, source, fetchedAt: Date.now() };
+      state.catalog = { places, center: Object.assign({}, center), radiusKm, source, fetchedAt: Date.now(), userChosen: true };
       state.index = null;
       if (!save('catalog', state.catalog)) toast('Catálogo generado (no se pudo guardar en el dispositivo).');
       progress('#catProgress', null);
@@ -162,7 +167,7 @@
         await G.osrmFromCenter(center, missing, t => progress('#catProgress', 50, t));
         progress('#catProgress', null);
       }
-      state.catalog = { places, center: Object.assign({}, center), radiusKm: 0, source: 'Catálogo importado', fetchedAt: Date.now() };
+      state.catalog = { places, center: Object.assign({}, center), radiusKm: 0, source: 'Catálogo importado', fetchedAt: Date.now(), userChosen: true };
       state.index = null; save('catalog', state.catalog); renderCatalogStatus(); compute();
       toast(`Catálogo importado: ${places.length} lugares`);
     } catch (e) { toast(e.message, 6000); }
