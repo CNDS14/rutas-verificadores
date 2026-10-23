@@ -90,6 +90,7 @@
     inR.forEach(p => { byType[p.type] = (byType[p.type] || 0) + 1; });
     const moved = C.haversineKm(cat.center, state.cfg.center) > 0.3;
     el.className = 'status ok';
+    const cs = $('#catSummary'); if (cs) cs.textContent = `${cat.places.length.toLocaleString('es-MX')} colonias, fraccionamientos y poblados${cat.bundled ? ' en 3 zonas fijas' : ''}`;
     el.innerHTML = (cat.bundled ? `<b>Catálogo oficial incluido</b> (${esc(cat.bundled)}) · zonas fijas: ${cat.zoneNames.map(esc).join(' · ')}<br>` : '') +
       `<b>${inR.length}</b> asentamientos ${noLimit() ? '(sin límite de minutos)' : 'a ≤ ' + state.cfg.maxMin + ' min'} de ${cat.places.length} · ` +
       Object.entries(byType).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${n} ${esc(t)}`).join(' · ') +
@@ -367,7 +368,7 @@
     $('#btnExport').disabled = !state.result;
     if (map && $('#tab-zonas').classList.contains('active')) drawMap();
     const r = state.result;
-    $('#subtitle').textContent = r ? `${r.sectors.map(s => s.name).join(' · ')}` : 'Durango · 3 zonas';
+    $('#subtitle').textContent = 'Municipio de Durango';
   }
 
   function renderMatch() {
@@ -442,7 +443,7 @@
   function renderZones() {
     const r = state.result, cards = $('#zoneCards');
     if (!r) {
-      cards.innerHTML = `<div class="card empty" style="grid-column:1/-1">Genera el catálogo y sube el Excel para ver las 3 zonas.</div>`;
+      cards.innerHTML = `<div class="panel empty" style="grid-column:1/-1">Sube un Excel en Cargar para ver las 3 zonas.</div>`;
       $('#catTable tbody').innerHTML = ''; $('#legend').innerHTML = ''; return;
     }
     const totalW = r.sectors.reduce((a, s) => a + s.days.reduce((x, d) => x + d.workMin, 0), 0) || 1;
@@ -451,12 +452,16 @@
       const w = s.days.reduce((x, d) => x + d.workMin, 0);
       const cnt = t => s.nodes.filter(n => t(n.type)).length;
       const share = state.visits.length ? w / totalW : s.nodes.length / totalN;
+      const big = state.visits.length
+        ? `<div><b>${s.visits}</b><span>visitas</span></div><div><b>${s.days.length}</b><span>${s.days.length === 1 ? 'día' : 'días'}</span></div><div><b>${(w / 60).toFixed(1)}</b><span>horas</span></div>`
+        : `<div><b>${s.nodes.length}</b><span>asentamientos</span></div>`;
       return `<div class="zcard" style="--c:${s.color}">
-        <h3><span>${esc(s.verif)}</span><span class="tag">Zona ${esc(s.name)}</span></h3>
-        <div class="meta"><span><b>${s.visits}</b> visitas</span><span><b>${s.days.length}</b> día(s)</span><span><b>${(w / 60).toFixed(1)}</b> h</span></div>
-        <div class="meta"><span>${cnt(t => t === 'Colonia')} col.</span><span>${cnt(t => t === 'Fraccionamiento')} fracc.</span><span>${cnt(t => RURAL.includes(t))} poblados/ranchos</span></div>
-        <div class="bar"><i style="width:${Math.round(share * 100)}%"></i></div></div>`;
+        <div class="zname"><h3>${esc(s.verif)}</h3><span>Zona ${esc(s.name)}</span></div>
+        <div class="big">${big}</div>
+        <div class="mix">${cnt(t => t === 'Colonia')} colonias, ${cnt(t => t === 'Fraccionamiento')} fraccionamientos y ${cnt(t => RURAL.includes(t) || ['Pueblo', 'Granja', 'Hacienda'].includes(t))} poblados o ranchos</div>
+        <div class="bar" title="Parte de la carga total"><i style="width:${Math.round(share * 100)}%"></i></div></div>`;
     }).join('');
+    drawDial(r);
     $('#legend').innerHTML = r.sectors.map(s => `<span><i style="background:${s.color}"></i>${esc(s.verif)} · ${esc(s.name)}</span>`).join('') +
       `<span><i style="background:transparent;border:2px dashed var(--warn)"></i>Frontera compartible</span>`;
     const zs = $('#catZone'), cur = zs.value;
@@ -466,6 +471,25 @@
     ts.innerHTML = `<option value="">Todos los tipos</option>` + types.map(t => `<option>${esc(t)}</option>`).join('');
     ts.value = types.includes(ct) ? ct : '';
     renderCatTable();
+  }
+
+  /** Brújula de zonas: tres arcos con los cortes reales desde la Catedral */
+  function drawDial(r) {
+    const svg = $('#zoneDial'); if (!svg) return;
+    const cx = 110, cy = 110, R = 92, w = 22, pt = (a, rad) => [cx + rad * Math.sin(a * Math.PI / 180), cy - rad * Math.cos(a * Math.PI / 180)];
+    const cuts = r.cuts.slice().sort((a, b) => a - b);
+    let out = '';
+    cuts.forEach((a, j) => {
+      const z = cuts[(j + 1) % cuts.length]; const span = ((z - a + 360) % 360) || 360;
+      const s = r.sectors[r.arcSector[j]]; const a0 = a + 1.2, a1 = a + span - 1.2, large = (a1 - a0) > 180 ? 1 : 0;
+      const [x0, y0] = pt(a0, R), [x1, y1] = pt(a1, R), [x2, y2] = pt(a1, R - w), [x3, y3] = pt(a0, R - w);
+      out += `<path d="M${x0} ${y0} A${R} ${R} 0 ${large} 1 ${x1} ${y1} L${x2} ${y2} A${R - w} ${R - w} 0 ${large} 0 ${x3} ${y3}Z" fill="${s.color}"><title>Zona ${esc(s.name)}: ${esc(s.verif)}</title></path>`;
+      const mid = a + span / 2, [tx, ty] = pt(mid, R - w - 20);
+      out += `<text x="${tx}" y="${ty}" text-anchor="middle" dominant-baseline="middle" font-size="12" font-weight="700" style="fill:${s.color}">${s.visits || s.nodes.length}</text>`;
+    });
+    ['N', 'E', 'S', 'O'].forEach((l, k) => { const [x, y] = pt(k * 90, R + 11); out += `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="middle" font-size="10" font-weight="650" opacity=".55">${l}</text>`; });
+    out += `<circle cx="${cx}" cy="${cy}" r="4" style="fill:var(--ink)"/><text x="${cx}" y="${cy + 18}" text-anchor="middle" font-size="9.5" opacity=".6">Catedral</text>`;
+    svg.innerHTML = out;
   }
 
   function renderCatTable() {
@@ -480,7 +504,7 @@
       if (L !== letter) { letter = L; html += `<tr class="letter"><td colspan="6">${esc(L)}</td></tr>`; }
       const s = r.sectors[n.sector];
       html += `<tr><td>${esc(n.name)} ${n.border.shared ? `<span class="tag border" title="${n.border.reason === 'centro' ? 'Núcleo del centro: cualquiera puede cubrirla' : 'Pegada al límite con ' + esc(r.sectors[n.neighbor]?.verif || '')}">${n.border.reason === 'centro' ? 'centro' : 'frontera'}</span>` : ''}${state.overrides[n.id] != null ? ' <span class="tag">manual</span>' : ''}</td>
-        <td>${esc(n.type)}</td><td class="num">${Math.round(n.minutes)}${n.timeSource === 'estimado' ? '<span class="tag est">≈</span>' : ''}</td><td class="num">${n.km ?? ''}</td><td class="num">${n.visits || ''}</td>
+        <td>${esc(n.type)}</td><td class="n">${Math.round(n.minutes)}${n.timeSource === 'estimado' ? '<span class="tag est">≈</span>' : ''}</td><td class="n">${n.km ?? ''}</td><td class="n">${n.visits || ''}</td>
         <td><select data-node="${esc(n.id)}" style="--c:${s.color}">${r.sectors.map(o => `<option value="${o.idx}" ${o.idx === n.sector ? 'selected' : ''}>${esc(o.verif)} · ${esc(o.name)}${o.idx === n.auto ? ' (auto)' : ''}</option>`).join('')}</select></td></tr>`;
     });
     $('#catTable tbody').innerHTML = html || `<tr><td colspan="6" class="empty">Sin resultados</td></tr>`;
@@ -513,7 +537,9 @@
     r.cuts.forEach((a, j) => {
       const z = r.cuts[(j + 1) % r.cuts.length], span = ((z - a + 360) % 360) || 360;
       const inArc = r.nodes.filter(n => ((n.bearing - a + 360) % 360) < span);
-      const rad = Math.max(5, Math.max(0, ...inArc.map(n => n.distKm)) + 1.5);
+      const ds = inArc.map(n => n.distKm).sort((x, y) => x - y);
+      const p90 = ds.length ? ds[Math.floor(ds.length * 0.9)] : 6;   // sin dejar que un rancho lejano infle la cuña
+      const rad = Math.max(5, Math.min(p90 + 1.5, 25));
       const pts = [[c.lat, c.lng]];
       for (let t = 0; t <= span; t += 3) { const p = C.destination(c, a + t, rad); pts.push([p.lat, p.lng]); }
       const p2 = C.destination(c, a + span, rad); pts.push([p2.lat, p2.lng]);
@@ -529,7 +555,7 @@
         dashArray: n.border.shared ? '3 3' : null, fillColor: s.color, fillOpacity: n.visits ? 0.85 : 0.35
       });
       m.bindPopup(`<b>${esc(n.name)}</b><br>${esc(n.type)} · ${Math.round(n.minutes)} min · ${n.km ?? '?'} km<br>Zona ${esc(s.name)} · <b>${esc(s.verif)}</b><br>${n.visits} visita(s)${n.border.shared ? `<br><i>${n.border.reason === 'centro' ? 'Centro: zona comodín' : 'Frontera con ' + esc(r.sectors[n.neighbor]?.verif || '')}</i>` : ''}`);
-      m.addTo(layer); bounds.push([n.lat, n.lng]);
+      m.addTo(layer); if (n.visits || n.distKm < 12) bounds.push([n.lat, n.lng]);
     });
     if (bounds.length && !drawMap._fitted) { map.fitBounds(bounds, { padding: [20, 20] }); drawMap._fitted = true; }
   }
@@ -552,7 +578,7 @@
 
   function renderRoutes() {
     const r = state.result;
-    if (!r) { $('#verifChips').innerHTML = ''; $('#routeSummary').innerHTML = '<div class="empty">Sin rutas todavía.</div>'; $('#routeDays').innerHTML = ''; return; }
+    if (!r) { $('#verifChips').innerHTML = ''; $('#routeSummary').innerHTML = '<div class="empty">Sube un Excel en Cargar para armar las rutas.</div>'; $('#routeDays').innerHTML = ''; return; }
     const ai = state.activeVerif;
     $('#verifChips').innerHTML = r.sectors.map(s => `<button class="chip ${s.idx === ai ? 'active' : ''}" style="--c:${s.color}" data-v="${s.idx}"><span class="dot"></span>${esc(s.verif)} · ${esc(s.name)}</button>`).join('');
     $$('#verifChips .chip').forEach(b => b.onclick = () => { state.activeVerif = +b.dataset.v; renderRoutes(); });
@@ -572,11 +598,11 @@
           <button class="btn sm" data-share="${d.day}">Compartir día</button></header>
         <div class="links">${links.map(l => `<a class="btn sm primary" target="_blank" rel="noopener" href="${l.url}">Google Maps ${links.length > 1 ? `(${l.from}–${l.to})` : ''}</a>`).join('')}</div>
         ${d.stops.map((st, k) => `<div class="stop"><span class="n">${k + 1}</span><div>
-          <h4>${esc(st.label)} <span class="tag">${esc(st.type)}</span> <span class="muted small">${Math.round(st.minutes || 0)} min del centro</span></h4>
+          <h4>${esc(st.label)} <span class="tag">${esc(st.type)}</span> <span class="muted small">${Math.round(st.minutes || 0)} min desde la base</span></h4>
           <ul>${st.visits.map(v => `<li class="${state.done[v.key] ? 'done' : ''}"><input type="checkbox" data-done="${esc(v.key)}" ${state.done[v.key] ? 'checked' : ''}><span><b>${esc(v.nombre || 'Visita ' + v.id)}</b>${v.direccion ? ' — ' + esc(v.direccion) : ''}${v.telefono ? ` · <a href="tel:${esc(v.telefono)}">${esc(v.telefono)}</a>` : ''}</span></li>`).join('')}</ul>
         </div></div>`).join('')}
       </article>`;
-    }).join('') : '<div class="card empty">Esta zona no tiene visitas asignadas.</div>';
+    }).join('') : '<div class="panel empty">Esta zona no tiene visitas asignadas.</div>';
     $$('[data-done]').forEach(c => c.onchange = () => {
       if (c.checked) state.done[c.dataset.done] = true; else delete state.done[c.dataset.done];
       save('done', state.done); c.closest('li').classList.toggle('done', c.checked);
@@ -607,7 +633,7 @@
   // ------------------------------------------------------------ estrategia
   function renderRecs() {
     const r = state.result;
-    if (!r) { $('#recs').innerHTML = '<div class="card empty">Las recomendaciones aparecen al procesar el Excel.</div>'; return; }
+    if (!r) { $('#recs').innerHTML = '<div class="panel empty">Las recomendaciones aparecen al procesar el Excel.</div>'; return; }
     const lbl = { clave: 'Clave', ruta: 'Ruta', compartir: 'Trabajo compartido', alerta: 'Atención' };
     $('#recs').innerHTML = r.recs.map(x => {
       const c = x.level === 'ruta' && x.sector != null ? r.sectors[x.sector].color : null;
@@ -704,7 +730,7 @@
 
   $('#btnExport').addEventListener('click', async () => {
     const r = state.result; if (!r) return;
-    const btn = $('#btnExport'); btn.disabled = true; const label = btn.textContent; btn.textContent = 'Generando…';
+    const btn = $('#btnExport'); btn.disabled = true; const label = btn.innerHTML; btn.textContent = 'Generando…';
     try {
       await loadExcelJS();
       const wb = new ExcelJS.Workbook(); wb.creator = 'Rutas Verificadores'; wb.created = new Date();
@@ -793,7 +819,7 @@
       document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
       toast('Excel generado');
     } catch (e) { toast('No se pudo generar el Excel: ' + e.message, 6000); }
-    finally { btn.disabled = false; btn.textContent = label; }
+    finally { btn.disabled = false; btn.innerHTML = label; }
   });
   const safeName = s => s.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31);
 
@@ -804,7 +830,6 @@
     $('#cfgMaxMin').value = c.maxMin; $('#cfgTraffic').value = c.traffic; $('#cfgVisitMin').value = c.visitMin;
     $('#cfgDayH').value = c.dayH; $('#cfgMaxDay').value = c.maxPerDay; $('#cfgFarFirst').value = c.farFirst ? '1' : '0';
     $('#cfgCenter').value = `${c.center.lat}, ${c.center.lng}`; $('#cfgBase').value = c.base ? `${c.base.lat}, ${c.base.lng}` : '';
-    $('#cfgGKey').value = c.gKey || '';
   }
   const parseLL = s => { const m = String(s).match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/); return m ? { lat: +m[1], lng: +m[2] } : null; };
   $('#btnSaveCfg').addEventListener('click', () => {
@@ -814,7 +839,6 @@
     c.dayH = num('#cfgDayH', 8); c.maxPerDay = num('#cfgMaxDay', 0); c.farFirst = $('#cfgFarFirst').value === '1';
     const ce = parseLL($('#cfgCenter').value); if (ce) c.center = ce;
     c.base = parseLL($('#cfgBase').value);
-    c.gKey = $('#cfgGKey').value.trim();
     save('cfg', c);
     if (state.catalog && state.catalog.radiusKm && c.maxMin * 1.5 > state.catalog.radiusKm + 0.5) toast('Subiste el límite: genera de nuevo el catálogo para incluir lugares más lejanos.', 6000);
     else toast('Ajustes guardados');

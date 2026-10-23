@@ -1,10 +1,10 @@
 /* Service worker: app shell offline; mapas y APIs siempre en línea. */
-const VERSION = 'rv-v1.3.0';
+const VERSION = 'rv-v1.4.0';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/config.js', 'js/catalogo.js', 'js/core.js', 'js/geo.js', 'js/app.js',
   'js/vendor/xlsx.full.min.js', 'js/vendor/leaflet.js', 'js/vendor/leaflet.css', 'js/vendor/exceljs.min.js',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'
+  'fonts/archivo-var.woff2', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'
 ];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
