@@ -1,5 +1,5 @@
 /* Service worker: app shell offline; mapas y APIs siempre en línea. */
-const VERSION = 'rv-v1.2.0';
+const VERSION = 'rv-v1.2.1';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/config.js', 'js/core.js', 'js/geo.js', 'js/app.js',

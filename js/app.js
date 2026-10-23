@@ -40,7 +40,8 @@
   };
   const colors = () => ['--v1', '--v2', '--v3'].map(v => getComputedStyle(document.documentElement).getPropertyValue(v).trim());
   const base = () => state.cfg.base || state.cfg.center;
-  const eff = m => m == null ? null : m * state.cfg.traffic;
+  // Google Routes ya trae tráfico: el factor solo aplica a OSRM / estimados
+  const eff = (m, src) => m == null ? null : (src === 'Google' ? m : m * state.cfg.traffic);
 
   function toast(msg, ms) {
     const t = $('#toast'); t.textContent = msg; t.hidden = false;
@@ -67,14 +68,14 @@
     $$('.v-maxmin').forEach(e => { e.textContent = state.cfg.maxMin; });
     const el = $('#catStatus'), cat = state.catalog;
     if (!cat) { el.className = 'status'; el.textContent = 'Aún no se ha generado el catálogo.'; return; }
-    const inR = cat.places.filter(p => eff(p.minutes) <= state.cfg.maxMin);
+    const inR = cat.places.filter(p => eff(p.minutes, p.timeSource) <= state.cfg.maxMin);
     const byType = {};
     inR.forEach(p => { byType[p.type] = (byType[p.type] || 0) + 1; });
     const moved = C.haversineKm(cat.center, state.cfg.center) > 0.3;
     el.className = 'status ok';
     el.innerHTML = `<b>${inR.length}</b> asentamientos a ≤ ${state.cfg.maxMin} min (de ${cat.places.length} consultados) · ` +
       Object.entries(byType).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${n} ${esc(t)}`).join(' · ') +
-      `<br><small class="muted">Tiempos: ${esc(cat.source)} · factor tráfico ×${state.cfg.traffic} · ${new Date(cat.fetchedAt).toLocaleString('es-MX')}</small>` +
+      `<br><small class="muted">Tiempos: ${esc(cat.source)} · factor tráfico ×${state.cfg.traffic} (solo OSRM/estimados) · ${new Date(cat.fetchedAt).toLocaleString('es-MX')}</small>` +
       (moved ? '<br><b style="color:var(--warn)">El centro cambió: vuelve a generar el catálogo.</b>' : '');
   }
 
@@ -236,7 +237,7 @@
     const places = state.catalog ? state.catalog.places : [];
     if (!state.index) state.index = C.buildIndex(places);
     const byId = new Map(places.map(p => [p.id, p]));
-    const inRange = p => p && eff(p.minutes) != null && eff(p.minutes) <= cfg.maxMin;
+    const inRange = p => p && eff(p.minutes, p.timeSource) != null && eff(p.minutes, p.timeSource) <= cfg.maxMin;
     const visits = state.visits = buildVisits();
 
     // 1) ubicar cada visita
@@ -255,14 +256,14 @@
         if (!r) r = C.scanAddress([v.direccion, v.colonia, v.referencias].join(' '), state.index, center);
         if (r) { v.place = r.place; v.method = r.method; v.score = r.score; }
       }
-      v.minutes = v.own && !v.place ? eff(C.estimateDriveMin(center, v.own)) : (v.place ? eff(v.place.minutes) : null);
+      v.minutes = v.own && !v.place ? eff(C.estimateDriveMin(center, v.own)) : (v.place ? eff(v.place.minutes, v.place.timeSource) : null);
       v.status = (!v.place && !v.own) ? 'none' : (v.minutes > cfg.maxMin ? 'fuera' : 'ok');
     });
 
     // 2) nodos: asentamientos en radio + visitas con coordenadas propias sin asentamiento
     const nodes = new Map();
     places.filter(inRange).forEach(p => nodes.set(p.id, {
-      id: p.id, name: p.name, type: p.type, lat: p.lat, lng: p.lng, minutes: eff(p.minutes), km: p.km,
+      id: p.id, name: p.name, type: p.type, lat: p.lat, lng: p.lng, minutes: eff(p.minutes, p.timeSource), km: p.km,
       distKm: p.distKm, bearing: p.bearing, timeSource: p.timeSource, list: []
     }));
     visits.filter(v => v.status === 'ok').forEach(v => {
