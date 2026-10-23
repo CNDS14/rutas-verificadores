@@ -93,7 +93,7 @@
       let source = 'OSRM (OpenStreetMap, sin tráfico)';
       const onP = t => { const m = t.match(/(\d+)\/(\d+)/); progress('#catProgress', m ? 25 + 70 * (+m[1] / +m[2]) : 50, t); };
       if (cfg.gKey) {
-        try { await G.googleFromCenter(cfg.gKey, center, near, onP); source = 'Google Maps Distance Matrix (con tráfico)'; }
+        try { await G.googleFromCenter(cfg.gKey, center, near, onP); source = 'Google Routes API (con tráfico, día hábil 10:00)'; }
         catch (e) { toast('Google Maps falló (' + e.message + '). Usando OSRM.', 5000); await G.osrmFromCenter(center, near, onP); }
       } else await G.osrmFromCenter(center, near, onP);
       places = near.concat(far);

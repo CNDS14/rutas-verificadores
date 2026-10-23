@@ -1,7 +1,7 @@
 /* =========================================================================
    Rutas Verificadores · Servicios de mapas
    - Catálogo de asentamientos: OpenStreetMap vía Overpass (sin llave)
-   - Tiempos en auto: OSRM (sin llave) o Google Distance Matrix (con llave, con tráfico)
+   - Tiempos en auto: OSRM (sin llave) o Google Routes API · Compute Route Matrix (con llave, con tráfico)
    - Geocodificación de pendientes: Nominatim (1 consulta/seg) o Google Geocoder
    ========================================================================= */
 (function (root) {
@@ -107,12 +107,12 @@ out center tags;`;
   // -------------------------------------------------------------- Google Maps
   let gLoading = null;
   function loadGoogle(key) {
-    if (root.google && root.google.maps && root.google.maps.DistanceMatrixService) return Promise.resolve();
+    if (root.google && root.google.maps && root.google.maps.importLibrary) return Promise.resolve();
     if (gLoading) return gLoading;
     gLoading = new Promise((res, rej) => {
       root.__gmapsReady = () => res();
       const s = document.createElement('script');
-      s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&language=es&region=MX&callback=__gmapsReady`;
+      s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&loading=async&libraries=routes,geocoding&language=es&region=MX&callback=__gmapsReady`;
       s.async = true; s.onerror = () => { gLoading = null; rej(new Error('No se pudo cargar Google Maps (revisa la llave)')); };
       document.head.appendChild(s);
     });
@@ -126,25 +126,55 @@ out center tags;`;
     return d;
   }
 
+  /** Una fila de la matriz con la librería "routes" de Maps JavaScript (Routes API) */
+  async function routeMatrixJS(center, chunk, dep) {
+    const { RouteMatrix } = await google.maps.importLibrary('routes');
+    const { matrix } = await RouteMatrix.computeRouteMatrix({
+      origins: [{ lat: center.lat, lng: center.lng }],
+      destinations: chunk.map(p => ({ lat: p.lat, lng: p.lng })),
+      travelMode: 'DRIVING', routingPreference: 'TRAFFIC_AWARE', departureTime: dep,
+      fields: ['durationMillis', 'distanceMeters', 'condition']
+    });
+    const items = (matrix.rows[0] && matrix.rows[0].items) || [];
+    return chunk.map((_, j) => {
+      const it = items[j];
+      if (!it || it.condition === 'ROUTE_NOT_FOUND' || it.durationMillis == null) return null;
+      return { sec: it.durationMillis / 1000, m: it.distanceMeters };
+    });
+  }
+
+  /** Respaldo: Routes API REST (computeRouteMatrix) */
+  async function routeMatrixREST(key, center, chunk, dep) {
+    const wp = p => ({ waypoint: { location: { latLng: { latitude: p.lat, longitude: p.lng } } } });
+    const r = await fetch('https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,distanceMeters,condition' },
+      body: JSON.stringify({ origins: [wp(center)], destinations: chunk.map(wp), travelMode: 'DRIVE', routingPreference: 'TRAFFIC_AWARE', departureTime: dep.toISOString() })
+    });
+    if (!r.ok) throw new Error('Routes API HTTP ' + r.status);
+    const data = await r.json();
+    const out = chunk.map(() => null);
+    data.forEach(e => { if (e.condition === 'ROUTE_EXISTS' && e.duration) out[e.destinationIndex] = { sec: parseFloat(e.duration), m: e.distanceMeters }; });
+    return out;
+  }
+
+  /** Minutos/km con tráfico desde el centro usando Google Routes API (bloques de 25) */
   async function googleFromCenter(key, center, places, onProgress) {
     await loadGoogle(key);
-    const svc = new google.maps.DistanceMatrixService();
     const CH = 25, dep = nextWorkday10();
+    let useREST = false;
     for (let i = 0; i < places.length; i += CH) {
       const chunk = places.slice(i, i + CH);
       onProgress && onProgress(`Google Maps (con tráfico) ${Math.min(i + CH, places.length)}/${places.length}…`);
-      const resp = await new Promise((res, rej) => svc.getDistanceMatrix({
-        origins: [center], destinations: chunk.map(p => ({ lat: p.lat, lng: p.lng })),
-        travelMode: 'DRIVING', drivingOptions: { departureTime: dep, trafficModel: 'best_guess' }, unitSystem: google.maps.UnitSystem.METRIC
-      }, (r, st) => st === 'OK' ? res(r) : rej(new Error('Distance Matrix: ' + st))));
-      resp.rows[0].elements.forEach((el, j) => {
-        const p = chunk[j];
-        if (el.status === 'OK') {
-          const dur = (el.duration_in_traffic || el.duration).value;
-          p.minutes = +(dur / 60).toFixed(1); p.km = +(el.distance.value / 1000).toFixed(1); p.timeSource = 'Google';
-        } else { p.minutes = +C.estimateDriveMin(center, p).toFixed(1); p.km = +(C.haversineKm(center, p) * 1.35).toFixed(1); p.timeSource = 'estimado'; }
+      let res;
+      if (!useREST) { try { res = await routeMatrixJS(center, chunk, dep); } catch (e) { useREST = true; } }
+      if (useREST) res = await routeMatrixREST(key, center, chunk, dep);
+      chunk.forEach((p, j) => {
+        const v = res[j];
+        if (v) { p.minutes = +(v.sec / 60).toFixed(1); p.km = +((v.m || 0) / 1000).toFixed(1); p.timeSource = 'Google'; }
+        else { p.minutes = +C.estimateDriveMin(center, p).toFixed(1); p.km = +(C.haversineKm(center, p) * 1.35).toFixed(1); p.timeSource = 'estimado'; }
       });
-      await sleep(250);
+      await sleep(200);
     }
     return places;
   }
@@ -153,7 +183,8 @@ out center tags;`;
   async function geocode(query, center, gKey) {
     if (gKey) {
       await loadGoogle(gKey);
-      const g = new google.maps.Geocoder();
+      const { Geocoder } = await google.maps.importLibrary('geocoding');
+      const g = new Geocoder();
       const r = await new Promise(res => g.geocode({ address: query, region: 'mx', bounds: boundsOf(center, 40) }, (x, st) => res(st === 'OK' ? x : null)));
       if (r && r[0]) { const l = r[0].geometry.location; return { lat: l.lat(), lng: l.lng(), label: r[0].formatted_address }; }
       return null;

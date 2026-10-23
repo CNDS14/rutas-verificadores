@@ -81,10 +81,10 @@ Hay un ejemplo en `ejemplo/visitas-ejemplo.xlsx`.
 
 ### Google Maps (opcional)
 Sin llave la app es 100 % gratuita (OpenStreetMap + OSRM). Con llave:
-- Tiempos con **Distance Matrix con tráfico** (próximo día hábil 10:00).
+- Tiempos con **Routes API · Compute Route Matrix con tráfico** (próximo día hábil 10:00). Distance Matrix (Legacy) ya no se puede activar en proyectos nuevos.
 - Geocodificación de pendientes con Google.
 
-Habilita *Maps JavaScript API*, *Distance Matrix API* y *Geocoding API* en Google Cloud, y **restringe la llave por referente HTTP** a `https://<usuario>.github.io/*`. Puedes ponerla en `js/config.js` (`gKey`) para que todos los dispositivos la usen sin capturarla; es seguro solo si está restringida por dominio y por API. También se puede capturar por dispositivo en Ajustes.
+Habilita *Maps JavaScript API*, *Routes API* y *Geocoding API* (proyecto `rutas-verificadores` ya configurado) en Google Cloud, y **restringe la llave por referente HTTP** a `https://<usuario>.github.io/*`. Puedes ponerla en `js/config.js` (`gKey`) para que todos los dispositivos la usen sin capturarla; es seguro solo si está restringida por dominio y por API. También se puede capturar por dispositivo en Ajustes.
 
 ---
 
@@ -94,7 +94,7 @@ Habilita *Maps JavaScript API*, *Distance Matrix API* y *Geocoding API* en Googl
 index.html              UI
 css/app.css             estilos (claro/oscuro, móvil primero)
 js/core.js              lógica pura: coincidencias, sectores, rutas, recomendaciones
-js/geo.js               Overpass, OSRM, Google Distance Matrix, Nominatim
+js/geo.js               Overpass, OSRM, Google Routes API, Nominatim / Google Geocoder
 js/app.js               estado, pantallas, exportación
 js/vendor/              SheetJS 0.18.5, Leaflet 1.9.4 (locales, funcionan offline)
 sw.js                   service worker (app offline; mapas y APIs en línea)

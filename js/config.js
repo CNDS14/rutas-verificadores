@@ -4,5 +4,5 @@
 window.APP_CONFIG = {
   base: { lat: 24.0244475, lng: -104.6414927 },
   baseLabel: 'Caja Hipódromo Matriz · C. Tepehuanes 709, Col. Hipódromo',
-  gKey: ''
+  gKey: 'AIzaSyBy4fAwlmrFFjrIOga_3oIX4gzrFfjPlVs'
 };
