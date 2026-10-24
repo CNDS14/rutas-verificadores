@@ -861,21 +861,79 @@
   });
   // Plantilla original con la columna "Asignada a" (userName) llena con el usuario de cada verificador
   const userOf = idx => (state.cfg.users && state.cfg.users[idx]) || state.cfg.verifs[idx];
+  /**
+   * Devuelve el MISMO archivo .xlsx (estilos, comentarios, encabezados, METADATA) cambiando solo las celdas indicadas.
+   * Edita el XML de la hoja directamente; agrega los textos a sharedStrings como lo haría Excel.
+   */
+  function patchXlsx(b64, sheetName, colIdx, assign) {
+    const CFB = XLSX.CFB, dec = new TextDecoder('utf-8'), enc = new TextEncoder();
+    const cfb = CFB.read(b64, { type: 'base64' });
+    const get = p => { const e = CFB.find(cfb, p); return e ? { e, text: dec.decode(e.content) } : null; };
+    const put = (o, text) => { o.e.content = enc.encode(text); o.e.size = o.e.content.length; };
+    const wbx = get('/xl/workbook.xml'), rels = get('/xl/_rels/workbook.xml.rels');
+    const escRe = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const xmlEsc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const sheetTag = wbx.text.match(new RegExp('<sheet\\b[^>]*name="' + escRe(xmlEsc(sheetName)) + '"[^>]*/>'));
+    if (!sheetTag) throw new Error('No se encontró la hoja ' + sheetName);
+    const rid = sheetTag[0].match(/r:id="([^"]+)"/)[1];
+    const target = rels.text.match(new RegExp('<Relationship\\b[^>]*Id="' + escRe(rid) + '"[^>]*/>'))[0].match(/Target="([^"]+)"/)[1];
+    const path = '/' + (target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, ''));
+    const sh = get(path); if (!sh) throw new Error('No se pudo abrir la hoja');
+    // sharedStrings: índice para cada usuario
+    let sst = get('/xl/sharedStrings.xml'), idxOf = new Map(), added = 0;
+    if (sst) {
+      let n = (sst.text.match(/<si>|<si /g) || []).length, extra = '';
+      new Set(assign.values()).forEach(t => { idxOf.set(t, n++); extra += '<si><t xml:space="preserve">' + xmlEsc(t) + '</t></si>'; });
+      sst.text = sst.text.replace('</sst>', extra + '</sst>')
+        .replace(/uniqueCount="\d+"/, 'uniqueCount="' + n + '"')
+        .replace(/count="(\d+)"/, (m, c) => 'count="' + (+c + assign.size) + '"');
+      put(sst, sst.text);
+    }
+    const colL = XLSX.utils.encode_col(colIdx);
+    const colStyle = (() => { // estilo de la columna (<col style=...>) para celdas que no existían
+      const m = [...sh.text.matchAll(/<col\b([^>]*)\/>/g)].map(x => x[1]).find(a => { const mn = +(/min="(\d+)"/.exec(a) || [])[1], mx = +(/max="(\d+)"/.exec(a) || [])[1]; return colIdx + 1 >= mn && colIdx + 1 <= mx; });
+      const st = m && /style="(\d+)"/.exec(m); return st ? st[1] : null;
+    })();
+    let xml = sh.text;
+    assign.forEach((text, r0) => {
+      const ref = colL + (r0 + 1);
+      const cellXml = s => sst ? `<c r="${ref}"${s ? ` s="${s}"` : ''} t="s"><v>${idxOf.get(text)}</v></c>`
+                                : `<c r="${ref}"${s ? ` s="${s}"` : ''} t="inlineStr"><is><t>${xmlEsc(text)}</t></is></c>`;
+      const rowRe = new RegExp('(<row\\b[^>]*\\br="' + (r0 + 1) + '"[^>]*>)([\\s\\S]*?)(</row>)');
+      xml = xml.replace(rowRe, (m, a, body, z) => {
+        const cellRe = new RegExp('<c\\b[^>]*\\br="' + ref + '"[^>]*?(?:/>|>[\\s\\S]*?</c>)');
+        const old = body.match(cellRe);
+        if (old) { const st = /\bs="(\d+)"/.exec(old[0]); return a + body.replace(cellRe, cellXml(st ? st[1] : colStyle)) + z; }
+        // insertar en orden de columna
+        const cells = [...body.matchAll(/<c\b[^>]*\br="([A-Z]+)\d+"/g)];
+        const after = cells.find(c => XLSX.utils.decode_col(c[1]) > colIdx);
+        const nc = cellXml(colStyle);
+        return a + (after ? body.slice(0, after.index) + nc + body.slice(after.index) : body + nc) + z;
+      });
+    });
+    put(sh, xml);
+    return CFB.write(cfb, { fileType: 'zip', type: 'array', compression: true });
+  }
+
+  // Plantilla original con la columna "Asignada a" (userName) llena con el usuario de cada verificador
   $('#btnExportTpl').addEventListener('click', () => {
     const r = state.result, x = state.excel;
     if (!r || !x || x.mapping.asignado == null) return;
     if (!x.b64) { toast('Vuelve a subir el archivo para generar la plantilla.', 5000); return; }
-    const wb = XLSX.read(x.b64, { type: 'base64', cellStyles: true });
-    const ws = wb.Sheets[x.sheet], c = x.mapping.asignado;
-    let n = 0, skipped = 0;
-    state.visits.forEach(v => {
-      const rr = x.rowNums[v.i]; if (rr == null) return;
-      if (v.sector == null) { skipped++; return; }
-      ws[XLSX.utils.encode_cell({ r: rr, c })] = { t: 's', v: userOf(v.sector) }; n++;
-    });
-    const base = x.fileName.replace(/\.(xlsx|xls|csv)$/i, '');
-    XLSX.writeFile(wb, `${base}_asignada.xlsx`, { cellStyles: true });
-    toast(`Plantilla lista: ${n} visitas asignadas${skipped ? `, ${skipped} sin ubicar quedaron igual` : ''}.`, 5000);
+    try {
+      const assign = new Map(); let skipped = 0;
+      state.visits.forEach(v => {
+        const rr = x.rowNums[v.i]; if (rr == null) return;
+        if (v.sector == null) { skipped++; return; }
+        assign.set(rr, userOf(v.sector));
+      });
+      const out = patchXlsx(x.b64, x.sheet, x.mapping.asignado, assign);
+      const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = x.fileName.replace(/\.(xlsx|xls|csv)$/i, '') + '_asignada.xlsx';
+      document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+      toast(`Plantilla lista: ${assign.size} visitas asignadas${skipped ? `, ${skipped} sin ubicar quedaron igual` : ''}.`, 5000);
+    } catch (e) { toast('No se pudo generar la plantilla: ' + e.message, 6000); }
   });
   const safeName = s => s.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31);
 
