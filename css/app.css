@@ -56,6 +56,9 @@ html,body{overflow-x:hidden}
 .tab{display:none}.tab.active{display:block}
 .page-head{margin-bottom:20px;max-width:68ch}
 .page-head p{margin:.35rem 0 0;color:var(--ink-2)}
+.page-head:has(.head-row){max-width:none}
+.head-row{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap}
+.head-row>div{max-width:68ch}
 
 @media (max-width:860px){
   .shell{grid-template-columns:1fr}

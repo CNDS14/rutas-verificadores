@@ -403,6 +403,7 @@
   function renderAll() {
     renderCatalogStatus(); renderExcel(); renderMatch(); renderZones(); renderRoutes(); renderRecs();
     $('#btnExport').disabled = !state.result;
+    $('#btnExportZonas').disabled = !state.result;
     $('#btnExportTpl').hidden = !(state.result && state.excel && state.excel.mapping && state.excel.mapping.asignado != null);
     if (map && $('#tab-zonas').classList.contains('active')) drawMap();
     const r = state.result;
@@ -759,6 +760,204 @@
     if (last > headerRow && !opt.noFilter) ws.autoFilter = { from: { row: headerRow, column: 1 }, to: { row: last, column: cols.length } };
     return ws;
   }
+
+  // ===================================================== EXPORTAR ZONAS
+  // Excel para análisis: mapa segmentado (ciudad y municipio), listado por zona y fronteras.
+  const EXPORT_COLORS = ['#2D5BD7', '#D27A1F', '#1F8A6E'];
+
+  /** Para cada asentamiento: con qué otras zonas colinda (vecino de otra zona a poca distancia) */
+  function zoneBorders(r) {
+    const N = r.nodes, out = new Map();
+    N.forEach(n => {
+      const lim = n.distKm < 10 ? 1.2 : 3;
+      const near = {};
+      N.forEach(m => {
+        if (m === n || m.sector === n.sector) return;
+        const d = C.haversineKm(n, m); if (d <= lim && (near[m.sector] == null || d < near[m.sector])) near[m.sector] = d;
+      });
+      const zs = Object.keys(near).map(Number).sort((a, b) => near[a] - near[b]);
+      out.set(n.id, { zones: zs, centro: n.distKm <= 1.2 });
+    });
+    return out;
+  }
+
+  /** Dibuja el mapa segmentado en un canvas (con calles de OpenStreetMap si están disponibles) y regresa PNG base64 */
+  async function zoneMapPNG(r, borders, mode) {
+    const W = 1600, H = 1100, c0 = state.cfg.center;
+    const pts = mode === 'ciudad' ? r.nodes.filter(n => n.distKm <= 9) : r.nodes.filter(n => n.distKm <= 60);
+    const q = (arr, f) => { const a = arr.slice().sort((x, y) => x - y); return a[Math.max(0, Math.min(a.length - 1, Math.round(f * (a.length - 1))))]; };
+    const lo = mode === 'ciudad' ? 0.03 : 0.01, hi = 1 - lo;
+    const lat2y = (lat, z) => { const s = Math.sin(lat * Math.PI / 180); return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * 256 * 2 ** z; };
+    const lng2x = (lng, z) => (lng + 180) / 360 * 256 * 2 ** z;
+    const lats = pts.map(p => p.lat), lngs = pts.map(p => p.lng);
+    const bb = { n: Math.max(q(lats, hi), c0.lat), s: Math.min(q(lats, lo), c0.lat), e: Math.max(q(lngs, hi), c0.lng), w: Math.min(q(lngs, lo), c0.lng) };
+    // zoom fraccionario: el mapa llena el lienzo (las teselas se escalan)
+    let z = 16;
+    while (z > 6 && (lng2x(bb.e, z) - lng2x(bb.w, z) > W * 0.9 || lat2y(bb.s, z) - lat2y(bb.n, z) > H * 0.8)) z--;
+    const cx = (lng2x(bb.e, z) + lng2x(bb.w, z)) / 2, cy = (lat2y(bb.s, z) + lat2y(bb.n, z)) / 2;
+    const ox = cx - W / 2, oy = cy - H / 2 + 20;
+    const P = p => [lng2x(p.lng, z) - ox, lat2y(p.lat, z) - oy];
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d');
+    g.fillStyle = '#F3F5F7'; g.fillRect(0, 0, W, H);
+    // fondo de calles (si la red lo permite)
+    let tiles = 0;
+    try {
+      const t0x = Math.floor(ox / 256), t1x = Math.floor((ox + W) / 256), t0y = Math.floor(oy / 256), t1y = Math.floor((oy + H) / 256), jobs = [];
+      for (let tx = t0x; tx <= t1x; tx++) for (let ty = t0y; ty <= t1y; ty++) jobs.push(new Promise(res => {
+        const im = new Image(); im.crossOrigin = 'anonymous'; const to = setTimeout(() => res(null), 7000);
+        im.onload = () => { clearTimeout(to); res({ im, tx, ty }); }; im.onerror = () => { clearTimeout(to); res(null); };
+        im.src = `https://tile.openstreetmap.org/${z}/${tx}/${ty}.png`;
+      }));
+      (await Promise.all(jobs)).forEach(t => { if (t) { g.drawImage(t.im, t.tx * 256 - ox, t.ty * 256 - oy); tiles++; } });
+      if (tiles) { g.fillStyle = 'rgba(255,255,255,.38)'; g.fillRect(0, 0, W, H); }
+    } catch (e) { tiles = 0; }
+    // cuñas de zona
+    const [ccx, ccy] = P(c0), Rpx = Math.hypot(W, H);
+    const cuts = r.cuts.slice().sort((a, b) => a - b);
+    cuts.forEach((a, j) => {
+      const b = cuts[(j + 1) % cuts.length], span = ((b - a + 360) % 360) || 360, sidx = r.arcSector[j];
+      g.beginPath(); g.moveTo(ccx, ccy);
+      for (let t = 0; t <= span; t += 1) { const ang = (a + t) * Math.PI / 180; g.lineTo(ccx + Rpx * Math.sin(ang), ccy - Rpx * Math.cos(ang)); }
+      g.closePath(); g.fillStyle = EXPORT_COLORS[sidx] + '26'; g.fill();
+    });
+    g.setLineDash([14, 10]); g.lineWidth = 3; g.strokeStyle = '#14213D';
+    cuts.forEach(a => { const ang = a * Math.PI / 180; g.beginPath(); g.moveTo(ccx, ccy); g.lineTo(ccx + Rpx * Math.sin(ang), ccy - Rpx * Math.cos(ang)); g.stroke(); });
+    g.setLineDash([]);
+    // asentamientos
+    const R0 = mode === 'ciudad' ? 6 : 5;
+    pts.forEach(n => {
+      const [x, y] = P(n); if (x < -10 || y < -10 || x > W + 10 || y > H + 10) return;
+      const b = borders.get(n.id), fr = b && b.zones.length;
+      g.beginPath(); g.arc(x, y, R0 + (n.visits ? Math.min(6, Math.sqrt(n.visits) * 2) : 0), 0, 2 * Math.PI);
+      g.fillStyle = EXPORT_COLORS[n.sector]; g.fill();
+      g.lineWidth = fr ? 3 : 1.2; g.strokeStyle = fr ? '#111111' : '#FFFFFF'; g.stroke();
+    });
+    // etiquetas: poblados en el mapa del municipio, zonas siempre
+    g.textBaseline = 'middle'; g.font = '600 15px Archivo, Arial, sans-serif';
+    const boxes = [];
+    const free = (x, y, w, h) => !boxes.some(b => x < b[0] + b[2] && x + w > b[0] && y < b[1] + b[3] && y + h > b[1]);
+    const [kx, ky] = P(c0); boxes.push([kx - 230, ky - 60, 460, 120]);   // deja libre el centro
+    boxes.push([10, H - 160, 440, 150]);   // leyenda
+    cuts.forEach((a, j) => {
+      const b = cuts[(j + 1) % cuts.length], span = ((b - a + 360) % 360) || 360, mid = (a + span / 2) * Math.PI / 180, s = r.sectors[r.arcSector[j]];
+      const rr = Math.min(W, H) * 0.36, x = Math.max(160, Math.min(W - 160, ccx + rr * Math.sin(mid))), y = Math.max(110, Math.min(H - 90, ccy - rr * Math.cos(mid)));
+      g.font = '800 34px Archivo, Arial, sans-serif'; g.textAlign = 'center';
+      g.lineWidth = 8; g.strokeStyle = 'rgba(255,255,255,.92)'; g.strokeText('Zona ' + s.name, x, y); g.fillStyle = EXPORT_COLORS[s.idx]; g.fillText('Zona ' + s.name, x, y);
+      g.font = '600 20px Archivo, Arial, sans-serif'; g.lineWidth = 6; g.strokeText(s.verif, x, y + 32); g.fillStyle = '#14213D'; g.fillText(s.verif, x, y + 32);
+      g.textAlign = 'left';
+      boxes.push([x - 170, y - 26, 340, 76]);
+    });
+    g.font = '600 15px Archivo, Arial, sans-serif'; g.textBaseline = 'middle';
+    if (mode !== 'ciudad') pts.filter(n => ['Pueblo', 'Poblado', 'Ejido'].includes(n.type)).sort((a, b) => a.minutes - b.minutes).forEach(n => {
+      const [x, y] = P(n); if (x < 0 || y < 70 || x > W || y > H) return;
+      const w = g.measureText(n.name).width + 4, h = 18;
+      if (x + 8 + w > W - 10 || !free(x + 8, y - h / 2, w, h)) return;
+      boxes.push([x + 8, y - h / 2, w, h]);
+      g.lineWidth = 4; g.strokeStyle = 'rgba(255,255,255,.9)'; g.strokeText(n.name, x + 9, y); g.fillStyle = '#14213D'; g.fillText(n.name, x + 9, y);
+    });
+    // centro y base
+    const mark = (p, label, fill, dy) => { const [x, y] = P(p); g.beginPath(); g.arc(x, y, 9, 0, 2 * Math.PI); g.fillStyle = fill; g.fill(); g.lineWidth = 3; g.strokeStyle = '#fff'; g.stroke();
+      g.font = '700 16px Archivo, Arial, sans-serif'; const w = g.measureText(label).width;
+      const lx2 = dy < 0 ? x - w - 14 : x + 14, ly2 = y + (dy < 0 ? -16 : 16);
+      g.lineWidth = 5; g.strokeStyle = 'rgba(255,255,255,.95)'; g.strokeText(label, lx2, ly2); g.fillStyle = '#14213D'; g.fillText(label, lx2, ly2); };
+    mark(c0, 'Catedral (centro)', '#14213D', -1); mark(base(), 'Caja Hipódromo (salida)', '#B42318', 1);
+    // encabezado, leyenda, norte y escala
+    g.fillStyle = 'rgba(20,33,61,.92)'; g.fillRect(0, 0, W, 54);
+    g.font = '700 24px Archivo, Arial, sans-serif'; g.fillStyle = '#fff'; g.textBaseline = 'middle';
+    g.fillText(mode === 'ciudad' ? 'Zonas de verificación · Ciudad de Durango' : 'Zonas de verificación · Municipio de Durango', 22, 28);
+    g.font = '500 15px Archivo, Arial, sans-serif'; g.textAlign = 'right';
+    g.fillText(new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' }), W - 22, 28); g.textAlign = 'left';
+    const lx = 20, ly = H - 150; g.fillStyle = 'rgba(255,255,255,.95)'; g.fillRect(lx, ly, 420, 132); g.strokeStyle = '#D9DFE7'; g.lineWidth = 1; g.strokeRect(lx, ly, 420, 132);
+    r.sectors.forEach((s, k) => { g.beginPath(); g.arc(lx + 20, ly + 22 + k * 26, 8, 0, 2 * Math.PI); g.fillStyle = EXPORT_COLORS[k]; g.fill();
+      g.fillStyle = '#14213D'; g.font = '600 15px Archivo, Arial, sans-serif'; g.fillText(`Zona ${s.name}: ${s.verif} (${s.nodes.length} asentamientos)`, lx + 38, ly + 22 + k * 26); });
+    g.beginPath(); g.arc(lx + 20, ly + 100, 8, 0, 2 * Math.PI); g.fillStyle = '#9AA5B5'; g.fill(); g.lineWidth = 3; g.strokeStyle = '#111'; g.stroke();
+    g.fillStyle = '#14213D'; g.fillText('Contorno negro = hace frontera con otra zona', lx + 38, ly + 100);
+    g.setLineDash([8, 6]); g.beginPath(); g.moveTo(lx + 12, ly + 122); g.lineTo(lx + 30, ly + 122); g.stroke(); g.setLineDash([]); g.fillText('Límite entre zonas', lx + 38, ly + 122);
+    // norte
+    g.fillStyle = '#14213D'; g.beginPath(); g.moveTo(W - 50, 80); g.lineTo(W - 62, 112); g.lineTo(W - 38, 112); g.closePath(); g.fill();
+    g.font = '700 16px Archivo, Arial, sans-serif'; g.textAlign = 'center'; g.fillText('N', W - 50, 126); g.textAlign = 'left';
+    // escala (metros por pixel en la latitud de Durango)
+    const mpp = 156543.03 * Math.cos(c0.lat * Math.PI / 180) / 2 ** z, nice = [500, 1000, 2000, 5000, 10000, 20000].find(m => m / mpp > 120) || 20000, px = nice / mpp;
+    g.fillStyle = '#14213D'; g.fillRect(W - 40 - px, H - 40, px, 6); g.font = '600 14px Archivo, Arial, sans-serif'; g.textAlign = 'right';
+    g.fillText(nice >= 1000 ? nice / 1000 + ' km' : nice + ' m', W - 40, H - 54);
+    g.font = '400 12px Arial'; g.fillText(tiles ? '© OpenStreetMap' : 'Sin fondo de calles (sin acceso a mapas)', W - 40, H - 18); g.textAlign = 'left';
+    return { b64: cv.toDataURL('image/png').split(',')[1], tiles };
+  }
+
+  $('#btnExportZonas').addEventListener('click', async () => {
+    const r = state.result; if (!r) return;
+    const btn = $('#btnExportZonas'), label = btn.innerHTML; btn.disabled = true; btn.textContent = 'Generando mapa…';
+    try {
+      await loadExcelJS();
+      if (document.fonts && document.fonts.load) { try { await document.fonts.load('700 20px Archivo'); } catch (e) {} }
+      const borders = zoneBorders(r);
+      const [mCity, mMun] = [await zoneMapPNG(r, borders, 'ciudad'), await zoneMapPNG(r, borders, 'municipio')];
+      const wb = new ExcelJS.Workbook(); wb.creator = 'Rutas Verificadores'; wb.created = new Date();
+      const zn = i => 'Zona ' + r.sectors[i].name;
+      const frText = n => { const b = borders.get(n.id); if (!b) return '';
+        const z = b.zones.map(k => `${zn(k)} (${r.sectors[k].verif})`).join(' y ');
+        return [z ? 'Hace frontera con ' + z : '', b.centro ? 'Centro: cerca de las 3 zonas' : ''].filter(Boolean).join(' · '); };
+      const typeGroup = t => ['Colonia', 'Barrio', 'Unidad habitacional', 'Condominio'].includes(t) ? 'Colonias' : t === 'Fraccionamiento' ? 'Fraccionamientos' : ['Pueblo', 'Poblado', 'Ejido'].includes(t) ? 'Poblados y ejidos' : ['Ranchería', 'Rancho', 'Granja', 'Hacienda', 'Finca', 'Paraje'].includes(t) ? 'Rancherías y ranchos' : 'Otros';
+
+      // 1) Mapa
+      const wm = wb.addWorksheet('Mapa', { pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
+      wm.getColumn(1).width = 4;
+      wm.getCell('B1').value = 'Mapa de zonas de verificación'; wm.getCell('B1').font = { name: FONT, bold: true, size: 16, color: { argb: 'FF14213D' } };
+      wm.getCell('B2').value = `Salida: ${BASE_LABEL}. Las líneas punteadas son los límites; los puntos con contorno negro hacen frontera con otra zona.`;
+      wm.getCell('B2').font = { name: FONT, size: 10, color: { argb: 'FF555555' } };
+      const i1 = wb.addImage({ base64: mCity.b64, extension: 'png' }), i2 = wb.addImage({ base64: mMun.b64, extension: 'png' });
+      wm.addImage(i1, { tl: { col: 1, row: 3 }, ext: { width: 1120, height: 770 } });
+      wm.getCell('B44').value = 'Municipio completo'; wm.getCell('B44').font = { name: FONT, bold: true, size: 13, color: { argb: 'FF14213D' } };
+      wm.addImage(i2, { tl: { col: 1, row: 45 }, ext: { width: 1120, height: 770 } });
+
+      // 2) Resumen
+      const groups = ['Colonias', 'Fraccionamientos', 'Poblados y ejidos', 'Rancherías y ranchos', 'Otros'];
+      const resRows = r.sectors.map(s => {
+        const cnt = g => s.nodes.filter(n => typeGroup(n.type) === g).length;
+        const fr = s.nodes.filter(n => borders.get(n.id).zones.length).length;
+        return { zone: s.idx, v: [zn(s.idx), s.verif, s.nodes.length, ...groups.map(cnt), fr, s.visits || ''] };
+      });
+      resRows.push({ bold: true, v: ['Total', '', r.nodes.length, ...groups.map(g => r.nodes.filter(n => typeGroup(n.type) === g).length), r.nodes.filter(n => borders.get(n.id).zones.length).length, r.sectors.reduce((a, s) => a + s.visits, 0) || ''] });
+      addTable(wb, 'Resumen', [{ h: 'Zona', min: 16 }, { h: 'Verificador', min: 18 }, { h: 'Total', num: true, w: 9 },
+        ...groups.map(g => ({ h: g, num: true, w: 14 })), { h: 'Hacen frontera', num: true, w: 12 }, { h: 'Visitas cargadas', num: true, w: 12 }],
+        resRows, { title: 'Resumen por zona', subtitle: 'Asentamientos del catálogo oficial (SEPOMEX + OpenStreetMap) asignados a cada zona.', top: 3, zoneCols: [1, 2], noFilter: true });
+
+      // 3) Una hoja por zona, alfabética, con fronteras marcadas
+      const zcols = [{ h: 'Nombre', wrap: true, min: 30, max: 44 }, { h: 'Tipo', min: 14 }, { h: 'Grupo', min: 16 }, { h: 'C.P.', center: true, w: 8 }, { h: 'Ámbito', min: 9 },
+        { h: 'Min desde Caja Hipódromo', num: true, w: 13 }, { h: 'Km', num: true, w: 8, fmt: '0.0' }, { h: 'Frontera', wrap: true, min: 30, max: 50 }, { h: 'Visitas', num: true, w: 9 }, { h: 'Google Maps', link: true, w: 13 }];
+      r.sectors.forEach(s => {
+        const rows = s.nodes.slice().sort((a, b) => a.name.localeCompare(b.name, 'es')).map(n => {
+          const ft = frText(n);
+          return { status: ft.startsWith('Hace frontera') ? 'Revisar' : null, v: [n.name, n.type, typeGroup(n.type), n.cp || '', n.distKm < 10 && ['Colonia', 'Fraccionamiento', 'Barrio'].includes(n.type) ? 'Urbano' : (n.ambito || ''), Math.round(n.minutes || 0), n.km ?? '', ft, n.visits || '', mapsUrl(n.lat + ',' + n.lng)] };
+        });
+        const ws = addTable(wb, `${zn(s.idx)} - ${s.verif}`, zcols, rows, { title: `${zn(s.idx)} · ${s.verif}`, subtitle: `${s.nodes.length} asentamientos. La columna Frontera se marca en amarillo cuando colinda con otra zona.`, top: 3, statusCol: 8, freezeCols: 1 });
+        ws.getRow(4).eachCell(c => { c.fill = fill('FF' + EXPORT_COLORS[s.idx].slice(1)); });
+      });
+
+      // 4) Fronteras
+      const frRows = [];
+      r.sectors.forEach(s => s.nodes.filter(n => borders.get(n.id).zones.length).sort((a, b) => a.name.localeCompare(b.name, 'es')).forEach(n => {
+        const b = borders.get(n.id);
+        frRows.push({ zone: s.idx, v: [zn(s.idx), s.verif, n.name, n.type, n.cp || '', b.zones.map(zn).join(' y '), b.zones.map(k => r.sectors[k].verif).join(' y '), Math.round(n.minutes || 0), n.visits || '', mapsUrl(n.lat + ',' + n.lng)] });
+      }));
+      addTable(wb, 'Fronteras', [{ h: 'Zona', min: 15 }, { h: 'Verificador', min: 16 }, { h: 'Asentamiento', wrap: true, min: 28, max: 42 }, { h: 'Tipo', min: 14 }, { h: 'C.P.', center: true, w: 8 },
+        { h: 'Colinda con', min: 16, max: 30 }, { h: 'Verificador vecino', min: 16, max: 30 }, { h: 'Min desde Caja Hipódromo', num: true, w: 13 }, { h: 'Visitas', num: true, w: 9 }, { h: 'Google Maps', link: true, w: 13 }],
+        frRows, { title: 'Asentamientos en la frontera entre zonas', subtitle: 'Cualquiera de los dos verificadores puede cubrirlos para equilibrar la carga.', top: 3, zoneCols: [1, 2] });
+
+      // 5) Todo el catálogo, alfabético
+      addTable(wb, 'Catálogo completo', [{ h: 'Nombre', wrap: true, min: 30, max: 44 }, { h: 'Tipo', min: 14 }, { h: 'C.P.', center: true, w: 8 }, { h: 'Zona', min: 15 }, { h: 'Verificador', min: 16 },
+        { h: 'Min desde Caja Hipódromo', num: true, w: 13 }, { h: 'Frontera', wrap: true, min: 30, max: 50 }, { h: 'Lat', num: true, w: 11, fmt: '0.000000' }, { h: 'Lng', num: true, w: 12, fmt: '0.000000' }],
+        r.nodes.slice().sort((a, b) => a.name.localeCompare(b.name, 'es')).map(n => ({ zone: n.sector, v: [n.name, n.type, n.cp || '', zn(n.sector), r.sectors[n.sector].verif, Math.round(n.minutes || 0), frText(n), +(+n.lat).toFixed(6), +(+n.lng).toFixed(6)] })),
+        { zoneCols: [4, 5], freezeCols: 1 });
+
+      const buf = await wb.xlsx.writeBuffer();
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      a.download = `mapa-zonas-verificadores-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+      toast(mCity.tiles ? 'Excel de zonas generado' : 'Excel generado (el mapa salió sin fondo de calles porque la red bloquea los mapas)', 5000);
+    } catch (e) { toast('No se pudo generar: ' + e.message, 6000); }
+    finally { btn.disabled = false; btn.innerHTML = label; }
+  });
 
   function statusOf(v) {
     if (v.status === 'none') return 'Sin ubicar';
