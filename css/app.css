@@ -47,6 +47,7 @@ small{font-size:.8rem;color:var(--muted);font-weight:450}
 .side-foot{margin-top:auto;display:flex;flex-direction:column;gap:8px}
 .side .btn.primary{background:#fff;color:#14213D;border-color:#fff}
 .side .btn.ghost{color:#fff;border-color:rgba(255,255,255,.28)}
+.vfield{display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:var(--r-md);background:var(--surface-2);border-top:4px solid var(--c)}
 .base-note{font-size:.76rem;opacity:.6;margin:6px 6px 0;line-height:1.35}
 
 main{padding:30px clamp(16px,3vw,40px) 60px;max-width:1240px;width:100%;min-width:0}
@@ -69,7 +70,7 @@ html,body{overflow-x:hidden}
   main{padding:20px 16px 100px}
   h1{font-size:1.4rem}
 }
-@media (max-width:480px){.brand span{display:none}.side-foot .btn svg{display:none}}
+@media (max-width:480px){.brand span{display:none}.side-foot .btn svg{display:none}.side-foot .btn{padding:7px 9px;font-size:.78rem}}
 
 /* ---------- piezas ---------- */
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:20px;margin-bottom:16px}

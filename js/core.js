@@ -147,17 +147,22 @@
    * Busca el asentamiento del catálogo que corresponde a un texto.
    * Devuelve { place, score, method } o null.
    */
-  function matchPlace(text, index, center, minScore) {
+  function matchPlace(text, index, center, minScore, cp) {
     minScore = minScore || 0.84;
     const norm = normalizeName(text);
     if (!norm) return null;
-    const ck = norm + '|' + minScore;
+    cp = String(cp || '').replace(/\D/g, '').slice(0, 5);
+    const ck = norm + '|' + minScore + '|' + cp;
     if (index.cache.has(ck)) return index.cache.get(ck);
     let res = null;
     const exact = index.byNorm.get(norm) || index.byNorm.get(baseName(norm));
     if (exact) {
       const ids = new Set(exact.map(p => p.id));
-      res = { place: pickClosest(exact, center), score: 1, method: ids.size > 1 ? 'nombre repetido' : 'exacta', options: ids.size };
+      const sameCp = cp ? exact.filter(p => String(p.cp || '') === cp) : [];
+      if (ids.size > 1 && sameCp.length) {
+        const sids = new Set(sameCp.map(p => p.id));
+        res = { place: pickClosest(sameCp, center), score: 1, method: sids.size > 1 ? 'nombre repetido' : 'exacta + C.P.', options: sids.size };
+      } else res = { place: pickClosest(exact, center), score: 1, method: ids.size > 1 ? 'nombre repetido' : 'exacta', options: ids.size };
     }
     if (!res) {
       const g = bigrams(norm); let best = null, bs = 0;
@@ -187,17 +192,18 @@
 
   // ----------------------------------------------------- detección de columnas
   const ROLE_KEYS = {
-    id: ['folio', 'id', 'clave', 'expediente', 'cuenta', 'no', 'num', 'numero de visita', 'consecutivo'],
+    asignado: ['asignada a', 'asignado a', 'username', 'user name', 'usuario asignado', 'verificador asignado'],
+    id: ['identificador externo', 'identificador', 'folio', 'id', 'clave', 'expediente', 'cuenta', 'no', 'num', 'numero de visita', 'consecutivo'],
     nombre: ['nombre', 'cliente', 'solicitante', 'beneficiario', 'razon social', 'titular', 'contribuyente', 'persona', 'negocio', 'establecimiento', 'empresa', 'derechohabiente'],
     direccion: ['direccion', 'domicilio', 'calle', 'dir', 'ubicacion', 'domicilio completo'],
     numero: ['numero exterior', 'num ext', 'no ext', 'exterior', 'numero ext'],
     colonia: ['colonia', 'fraccionamiento', 'fracc', 'asentamiento', 'barrio', 'localidad', 'poblado', 'comunidad', 'col', 'zona', 'sector', 'ejido'],
     municipio: ['municipio', 'ciudad', 'mpio'],
-    cp: ['cp', 'c p', 'codigo postal', 'cod postal'],
+    cp: ['cp', 'c p', 'codigo postal', 'codigopostal', 'cod postal'],
     lat: ['lat', 'latitud', 'latitude'],
     lng: ['lng', 'lon', 'long', 'longitud', 'longitude'],
     telefono: ['telefono', 'tel', 'celular', 'cel', 'movil', 'contacto'],
-    referencias: ['referencia', 'referencias', 'entre calles', 'observaciones', 'notas']
+    referencias: ['referencia', 'referencias', 'entre calles', 'entrecalles', 'observaciones', 'notas']
   };
 
   function normHeader(h) { return stripAccents(String(h || '')).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
@@ -214,6 +220,9 @@
   }
 
   /** Encuentra la fila de encabezados (algunos Excel traen títulos arriba) */
+  function headerRowScore(row) {
+    let s = 0; (row || []).forEach(c => { Object.values(ROLE_KEYS).forEach(keys => { s += headerScore(c, keys) > 0 ? 1 : 0; }); }); return s;
+  }
   function findHeaderRow(rows) {
     let bestRow = 0, bestScore = -1;
     for (let r = 0; r < Math.min(rows.length, 15); r++) {
@@ -230,12 +239,14 @@
 
   function detectColumns(headers, sampleRows) {
     const mapping = {}; const used = new Set();
-    const order = ['lat', 'lng', 'cp', 'numero', 'colonia', 'direccion', 'nombre', 'id', 'municipio', 'telefono', 'referencias'];
+    const order = ['asignado', 'lat', 'lng', 'cp', 'numero', 'colonia', 'direccion', 'nombre', 'id', 'municipio', 'telefono', 'referencias'];
     for (const role of order) {
       let best = -1, bs = 0;
       headers.forEach((h, i) => {
         if (used.has(i)) return;
         let s = headerScore(h, ROLE_KEYS[role]);
+        if (role === 'numero' && /calle/.test(normHeader(h))) s = 0;   // "Calle y número exterior" ya es domicilio
+        if (role === 'id' && /grupo/.test(normHeader(h))) s = 0;
         if (s && (role === 'lat' || role === 'lng') && sampleRows) {
           const nums = sampleRows.map(r => parseFloat(r[i])).filter(v => !isNaN(v));
           const ok = nums.filter(v => role === 'lat' ? (v > 14 && v < 33) : (v < -86 && v > -118)).length;
@@ -566,7 +577,7 @@
   const Core = {
     haversineKm, bearing, destination, estimateDriveMin, angDiff, circularMean, directionName,
     stripAccents, normalizeName, baseName, classifyPlace, buildIndex, matchPlace, scanAddress,
-    normHeader, findHeaderRow, detectColumns, partitionSectors, orderSectors, sectorNames, borderInfo,
+    normHeader, findHeaderRow, headerRowScore, detectColumns, partitionSectors, orderSectors, sectorNames, borderInfo,
     solveTour, planRoute, mapsLinks, recommendations, routeLength
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = Core; else root.Core = Core;
